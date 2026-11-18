@@ -1,0 +1,97 @@
+# The VAR simnet harness (dex/testing/var) on every PR into main and every push to main:
+# docs/var-port/plan.md, step 1a.
+name: VAR harness
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  shell:
+    name: Harness shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 #v6.0.0
+      - run: |
+          for f in dex/testing/var/*.sh; do bash -n "$f"; done
+          shellcheck -S warning dex/testing/var/*.sh
+
+  harness:
+    name: VAR harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # The pins in plan.md, Versions. Every node submodule is tagged v1.3.14 on the
+      # root tag's commit, so go install builds the release's code.
+      NODE_VERSION: v1.3.14
+      WALLET_VERSION: 42aa5102b0a29e9e741cad6532d8fce749f120fa
+      CTL_VERSION: v1.3.14
+      VAR_BIN: ${{ github.workspace }}/bin-var # untracked, outside dex/testing/var
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 #v6.0.0
+
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c #v6.1.0
+        with:
+          go-version: '1.25'
+          cache: false
+
+      # Restore and save apart: a failed run still saves the build.
+      - name: Restore binaries
+        id: bin
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
+        with:
+          path: ${{ env.VAR_BIN }}
+          key: var-bin-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-${{ env.WALLET_VERSION }}-${{ env.CTL_VERSION }}
+
+      - name: Build binaries
+        if: steps.bin.outputs.cache-hit != 'true'
+        env:
+          GOBIN: ${{ env.VAR_BIN }}
+        run: |
+          go install github.com/monetarium/monetarium-node@"$NODE_VERSION"
+          go install github.com/monetarium/monetarium-wallet@"$WALLET_VERSION"
+          go install github.com/monetarium/monetarium-ctl@"$CTL_VERSION"
+
+      - name: Save binaries
+        if: steps.bin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
+        with:
+          path: ${{ env.VAR_BIN }}
+          key: ${{ steps.bin.outputs.cache-primary-key }}
+
+      # go install stamps no commit into --version: the module versions here are the proof.
+      - name: Show binary versions
+        run: go version -m "$VAR_BIN"/* | grep -E '^\S|^\s+mod\s'
+
+      - name: Install tmux and bc
+        run: sudo apt-get update -q && sudo apt-get install -yq tmux bc
+
+      # Step timeouts: ctl sets no RPC timeout, so a hung call would run into the job's,
+      # which cancels the job and skips the failure steps below.
+      # With no terminal, harness.sh leaves its tmux session running detached.
+      - name: Start harness
+        timeout-minutes: 20
+        run: dex/testing/var/harness.sh
+
+      - name: check.sh
+        timeout-minutes: 10
+        run: dex/testing/var/check.sh
+
+      - name: Dump tmux windows
+        if: failure()
+        run: |
+          for w in $(tmux list-windows -t var-harness -F '#W' 2>/dev/null); do
+            echo "===== $w"; tmux capture-pane -p -S - -t "var-harness:$w"
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 #v7.0.2
+        if: failure()
+        with:
+          name: var-harness-logs
+          path: |
+            ~/dextest/var/*/logs/simnet/*.log
+            ~/dextest/var/*/log/simnet/*.log
+            ~/dextest/var/*/create.log
+          retention-days: 7
