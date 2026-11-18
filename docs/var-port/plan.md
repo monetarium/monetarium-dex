@@ -106,7 +106,11 @@ premine and its own chain, so the harness mines from genesis.
 - **Budget per trading wallet:**
   - 500 VAR in the DCR harness's mix of amounts (10, 18, 5, 7, 1, 15, 3, 25, …);
   - 300 outputs of 0.01 VAR, for item 5's many-coins order;
-  - SKA1 outputs, each larger than the largest VAR output, for items 1 and 6.
+  - SKA1 outputs larger than the largest VAR output, for items 1 and 6: four of 1000 SKA1,
+    larger in coins, for a driver that reads an SKA1 amount as VAR, and one of 5 SKA1, for
+    one that parses `listunspent`'s amount at SKA1's 1e18 atoms per coin: 5 SKA1 reads as
+    5e18 atoms, larger than any VAR output, while 1000 SKA1 (1e21 atoms) does not fit in
+    64 bits.
 
   `spvwallet` gets the same VAR mix and SKA1 outputs.
 - **Optional with `VSP=1`, used only by step 10:** `monetarium-vsp` (`vspm`) on simnet, a
@@ -120,8 +124,9 @@ It asserts:
 - alpha's node finds a mined transaction by txid (`--txindex`), alpha's wallet has the
   `server_fees` account, and beta is on alpha's tip;
 - the VAR and SKA1 balances of each trading wallet and `spvwallet` match the budget
-  (`getbalance … <cointype>`), with 300 outputs of 0.01 VAR in each trading wallet and every
-  SKA1 output above the largest VAR output;
+  (`getbalance … <cointype>`), with 300 outputs of 0.01 VAR in each trading wallet, every
+  SKA1 output above the largest VAR output in atoms, at least one above it in coins, and at
+  least one below 2^63 atoms;
 - `spvwallet` is in SPV mode with both nodes as peers;
 - `./fund` gets its transaction mined;
 - **negative controls**, each sent to alpha and each required to fail with the node's error:
@@ -186,7 +191,7 @@ theirs as they land. Upstream DCRDEX's CI runs no harness tests: `run_tests.sh` 
 
 - the per-PR job is green on `main`;
 - a test PR that drops `--rejectnonstd` from the harness makes the job fail on `check.sh`'s
-  negative controls. The PR is then closed.
+  dust and size controls. The PR is then closed.
 
 ## Step 2. Asset id 9508, `dex/bip-id.go`
 
@@ -322,15 +327,18 @@ the transaction unsigned. That stub gets a real signer.
     cap; either is accepted.
   - The test also records how many inputs coin selection picks, the question the item leaves
     open.
-- **Item 6, `TestFundingIgnoresSKA`.** With SKA1 outputs larger than every VAR output, none of
-  the following may select or lock an SKA outpoint:
+- **Item 6, `TestFundingIgnoresSKA`.** The stub's SKA1 outputs have step 1's shape (four of
+  1000 SKA1 and one of 5 SKA1), and every amount funded, sent or withdrawn is above the stub's
+  largest VAR output, so a driver that misread an SKA1 output would pick it before any VAR
+  one. None of the following may select or lock an SKA outpoint:
   - `FundOrder` (standard and split);
   - `Send`;
   - `Withdraw`.
 
   This covers the coins passed to `lockunspent` and the inputs of every built transaction.
-- **Item 7, `TestFeeRateUnits`.** The same table as step 4, through `FeeRate`. This covers
-  the RPC wallet; the native SPV wallet never calls `estimatesmartfee`, and its rates are
+- **Item 7, `TestFeeRateUnits`.** The same table as step 4, through `FeeRate`. This covers an
+  RPC wallet in RPC sync mode; in SPV mode (the native wallet, or an RPC wallet whose
+  dcrwallet syncs by SPV) the driver never calls `estimatesmartfee`, and its rates are
   `TestFeeOracle`'s (step 6).
 - **Item 8, `TestStakerFeeNotSelected`.** Outputs of staker-fee transactions in the funding
   account must never be selected, whatever their age.
@@ -353,8 +361,8 @@ signer, so item 2 holds here too.
 
 - **Item 6:** `TestSPVFundingIgnoresSKA` and `TestTransferAccountIgnoresSKA`. The first
   repeats step 5's item 6 test over the SPV seam. The second covers the native wallet's
-  account transfer. Both run with SKA1 outputs present, and neither may select or lock an SKA
-  outpoint.
+  account transfer. The first runs with step 5's SKA1 outputs and amounts, the second with
+  step 5's SKA1 outputs only (it takes no amounts); neither may select or lock an SKA outpoint.
 - **Item 7, `TestFeeOracle`.** The oracle fetch becomes injectable; today its URL is hard-coded.
   - The VAR driver's oracle is `monetarium.online/insight/api/utils/estimatefee` on mainnet
     and the testnet explorer's same route on testnet. That the testnet route answers is
@@ -392,16 +400,21 @@ runs with an RPC wallet and with a native SPV wallet, unless noted.
     checks that the reserve holds in practice.
 - **Item 1, `TestSPVMinedSKAContract`.** Native SPV wallet, no transaction data, a contract
   paid in SKA1 and mined within `ContractSearchLimit`. `AuditContract` must return an error.
-- **Item 6, `TestSKAWalletFunding`.** The trading wallet holds SKA1 outputs larger than its
-  VAR outputs. The test runs, in both DEX wallet types:
+- **Item 6, `TestSKAWalletFunding`.** The trading wallet holds step 1's SKA1 outputs (four of
+  1000 SKA1 and one of 5 SKA1). The native SPV wallet, which the test creates, is first sent
+  the same five from alpha, and the test checks it holds them. Every amount funded, sent or
+  withdrawn is above the largest VAR output of the wallet funding it (25 VAR in the trading
+  wallets), so a misread SKA1 output would be picked before any VAR one. The test runs, in
+  both DEX wallet types:
   - order funding (standard and split), send and withdraw;
   - account transfer (native SPV only).
 
-  After each, the SKA1 balance (`getbalance … 1`) must be unchanged, and no SKA outpoint may
-  appear in `listlockunspent` or in any transaction's inputs.
+  After each, the wallet's SKA1 balance must be unchanged, and no SKA outpoint may be locked
+  or appear in any transaction's inputs.
 
   An RPC-wallet run against `spvwallet` covers the external wallet's own SPV publish path. It
-  passes only if every transaction it publishes reaches alpha's mempool.
+  passes only if every transaction it publishes is accepted by alpha (in its mempool or a
+  block).
 
 **Done when** all of step 7's tests pass, twice, on a fresh harness.
 
@@ -498,7 +511,7 @@ port, the server accepts a staker-fee output once it is 16 blocks old. Step 4's
 
 **`TestStakerFeeRespend`:**
 
-- **Setup:** keep both wallets' staker-fee outputs in the funding account. Book an order, then
+- **Setup:** keep the RPC wallet's staker-fee outputs in the funding account. Book an order, then
   let another ticket of the same commitment address vote; repeat after a match.
 - **Pass:**
   - FundOrder never selects a staker-fee output, checked over 20 blocks of votes;

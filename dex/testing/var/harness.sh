@@ -36,11 +36,14 @@ SKA1_EMISSION_PRIV="000000000000000000000000000000000000000000000000000000000000
 SKA1_EMISSION_HEIGHT=150
 
 # Budget per trading wallet: 500 VAR in the DCR harness's mix of amounts, 300
-# outputs of 0.01 VAR, and SKA1 outputs each larger than the largest VAR output.
+# outputs of 0.01 VAR, and SKA1 outputs larger than the largest VAR output: 1000 SKA1
+# is larger in coins (a driver that reads the amount as VAR sees 1000 VAR), and 5 SKA1
+# in atoms (a driver that parses the amount at 1e18 atoms per coin reads 5e18, while
+# 1000 SKA1, 1e21 atoms, does not fit in 64 bits).
 # spvwallet gets the same, without the small outputs.
 VAR_MIX="10 18 5 7 1 15 3 25 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 8"
 SMALL_OUTPUTS=300
-SKA1_OUTPUTS="1000 1000 1000 1000"
+SKA1_OUTPUTS="1000 1000 1000 1000 5"
 # alpha must hold at least this much spendable VAR before it distributes.
 ALPHA_VAR_NEEDED=1600
 
@@ -68,7 +71,8 @@ else
 fi
 echo "harness: ${REV}"
 
-export SHELL=$(which bash)
+SHELL=$(command -v bash)
+export SHELL
 
 if tmux has-session -t ${SESSION} 2>/dev/null; then
   echo "harness already running: stop it with ${NODES_ROOT}/harness-ctl/quit" >&2; exit 1
