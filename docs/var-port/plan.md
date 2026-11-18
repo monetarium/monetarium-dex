@@ -52,7 +52,7 @@ Harness tests run on simnet.
 
 **Versions.**
 
-- **Node modules and `mond`:** `monetarium-node` `v1.3.14`.
+- **Node modules and the node binary:** `monetarium-node` `v1.3.14`.
 - **`monetarium-ctl`:** `v1.3.14`.
 - **Wallet:** `monetarium-wallet` main at a pinned commit, `42aa5102` or later, for both the
   harness wallet binary and the library the native SPV wallet embeds. `v1.3.14` has neither the
@@ -72,24 +72,29 @@ premine and its own chain, so the harness mines from genesis.
   - tmux session `var-harness`;
   - root `~/dextest/var`, wiped on start;
   - credentials `user`/`pass`, wallet passphrase `abc`;
-  - ports in the 196xx range, unused by the other harnesses.
+  - ports in the 196xx range, unused by the other harnesses;
+  - binaries from `VAR_BIN`, required: no fallback to `PATH`, where an installed release
+    wallet would pass for the pinned one.
 - **Nodes:** `alpha` (`--txindex` for the server, `--miningaddr`) and `beta` (connected to
   alpha). Both run with `--rejectnonstd`. Simnet accepts non-standard transactions by default,
   which skips the node's dust, 100 000-byte size and non-standard-input checks. Items 4 and 5
   depend on exactly those checks, so without the flag their tests could not fail.
 - **Wallets**, all RPC-synced to alpha unless noted:
-  - `alpha` holds the harness seed (mining address and the SKA1 emission address). It votes,
-    runs the ticket buyer, and buys 5 tickets per block from height 34, because the ticket
-    buyer alone lets the pool drain.
+  - `alpha` holds the harness seed (mining address and the SKA1 emission address). It votes
+    and buys 5 tickets per block from height 34 while it holds fewer than the target pool,
+    320 tickets. The wallet's ticket buyer stays off: it grows the pool far past the target,
+    and the ticket price with it, until most VAR is locked in tickets.
   - `trading1` and `trading2` are the trade tests' RPC wallets.
   - `spvwallet` is SPV-synced to alpha and beta. It is used by the item 6 test, which checks
     the external wallet's own SPV publish path.
 - **Files and ctl scripts:** `<name>/<name>.conf` per wallet, the file `simnet_trade.go`
-  reads. In `harness-ctl/`: `./alpha`, `./beta`, `./trading1`, `./trading2`, `./fund`,
-  `./quit`, and `./mine-alpha N`. Past height 143, `./mine-alpha N` waits before each block
-  until at least 3 votes are in the mempool; simnet needs 3 of 5.
+  reads. In `harness-ctl/`: `./alpha`, `./alpha_node`, `./beta_node`, `./trading1`,
+  `./trading2`, `./fund`, `./quit`, and `./mine-alpha N`. Past height 143, `./mine-alpha N`
+  waits before each block until all 5 votes are in the mempool. Simnet needs 3 of 5, but
+  alpha owns every ticket, and votes left over from a block mined at 3 would count toward the
+  next one.
 - **Chain build:**
-  1. Mine to 32, buy tickets, and mine to 151 with votes.
+  1. Mine to 34, buy tickets, and mine to 151 with votes.
   2. Emit SKA1 inside its window (heights 150-250): `importemissionkey` with the simnet
      emission key, then `createauthorizedemission`, then `sendrawtransaction` on alpha.
      Unlock the alpha wallet again afterwards, because the emission calls lock it and that
@@ -104,16 +109,20 @@ premine and its own chain, so the harness mines from genesis.
   - SKA1 outputs, each larger than the largest VAR output, for items 1 and 6.
 
   `spvwallet` gets the same VAR mix and SKA1 outputs.
-- **Optional with `VSP=1`, used only by step 9:** `monetarium-vsp` (`vspm`) on simnet, a
+- **Optional with `VSP=1`, used only by step 10:** `monetarium-vsp` (`vspm`) on simnet, a
   voting wallet behind it (`--enablevoting --manualtickets`), and a ticket-buying wallet that
   uses it.
 
 **Done when** `dex/testing/var/check.sh` passes twice in a row from a clean `~/dextest/var`.
 It asserts:
 
-- the height reached, and 20 further blocks mined, each with at least 3 votes;
+- the height reached, and 20 further blocks mined, each with all 5 votes;
+- alpha's node finds a mined transaction by txid (`--txindex`), alpha's wallet has the
+  `server_fees` account, and beta is on alpha's tip;
 - the VAR and SKA1 balances of each trading wallet match the budget
-  (`getbalance … <cointype>`);
+  (`getbalance … <cointype>`), with 300 outputs of 0.01 VAR and every SKA1 output above
+  the largest VAR output;
+- `./fund` gets its transaction mined;
 - **negative controls**, each sent to alpha and each required to fail with the node's error:
   - a transaction with a dust output;
   - a fee 1 atom below the minimum relay fee;
@@ -123,11 +132,20 @@ It asserts:
 If a later trade test fails only because of `--rejectnonstd`, that is a mainnet finding,
 not a reason to drop the flag.
 
-Open until step 1 runs:
+Settled by the first harness runs:
 
-- the exact `monetarium-wallet --create` prompt answers;
-- whether missing votes reduce the block subsidy, which affects the budget height;
-- how the DCR harness creates `alpha/alpha-ctl.conf`, to mirror it.
+- **`monetarium-wallet --create` answers:** the DCR harness's `y`, `n`, `y`, then the seed,
+  with the private passphrase taken from the config. The wallet discovers its addresses only
+  if blocks 1 and 2 exist when it starts, so the harness mines them first.
+- **Missing votes:** from height 144 the work subsidy is scaled by votes/5. The harness loses
+  none: `./mine-alpha` waits for all 5 votes. At height 168 alpha holds
+  over 4500 spendable VAR, so step 4 of the chain build mines no extra blocks.
+- **`alpha/alpha-ctl.conf`:** the DCR harness's `create-wallet.sh` writes it. It points
+  at the alpha wallet, and node calls such as `getblockchaininfo` (which the dcrdex harness
+  probes) pass through the wallet to the node. The VAR harness does the same, and adds
+  `./alpha_node` for calls straight to the node.
+- **Build time:** about 5 minutes from a clean root to funded trading wallets at height 170,
+  on a laptop. Step 1a starts without a cached chain.
 
 ## Step 1a. Invariant tests in CI
 
@@ -140,7 +158,7 @@ theirs as they land. Upstream DCRDEX's CI runs no harness tests: `run_tests.sh` 
   `go test -race -short ./...` on every push and PR (`.github/workflows/build.yml`). The VAR
   unit tests must not skip themselves under `-short`.
 - **Per-PR harness job (new),** on every PR into `main` and every push to `main`:
-  1. Build `mond`, `monetarium-wallet` and `monetarium-ctl` at the versions pinned in
+  1. Build `monetarium-node`, `monetarium-wallet` and `monetarium-ctl` at the versions pinned in
      Versions, cached by version.
   2. Start `dex/testing/var/harness.sh` detached: in CI it skips its final `tmux attach`,
      since a runner has no terminal.
@@ -223,7 +241,7 @@ This step ports the parameters, script helpers and size constants to Monetarium'
 ## Step 4. Server asset, `server/asset/mon`
 
 The port of `server/asset/dcr`, tested with its `testBackend`/`testNode` pattern.
-Fixtures are built with Monetarium's `wire`, and the verbose RPC results are shaped as `mond`
+Fixtures are built with Monetarium's `wire`, and the verbose RPC results are shaped as the node
 returns them: `Value` is absent for SKA outputs, `SKAValue` is a string, and `estimatesmartfee`
 returns atoms/kB as an integer string.
 
@@ -277,7 +295,7 @@ the transaction unsigned. That stub gets a real signer.
   - Each is run through Monetarium's script engine and must verify. The flags are the node's
     standard verify flags (`BaseStandardVerifyFlags` plus the agenda flags the node adds),
     copied into the test because they live in the node's `internal/mempool`. Step 7's
-    broadcast against `mond` catches any drift.
+    broadcast against the node catches any drift.
   - Its txid must equal the txid of the same bytes decoded with Monetarium's `wire`.
   - `v1.0.6` has no private redeem or refund. They come under this test once an upstream
     merge brings them.
