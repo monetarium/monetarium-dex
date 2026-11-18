@@ -36,11 +36,14 @@ SKA1_EMISSION_PRIV="000000000000000000000000000000000000000000000000000000000000
 SKA1_EMISSION_HEIGHT=150
 
 # Budget per trading wallet: 500 VAR in the DCR harness's mix of amounts, 300
-# outputs of 0.01 VAR, and SKA1 outputs each larger than the largest VAR output.
+# outputs of 0.01 VAR, and SKA1 outputs larger than the largest VAR output: 1000 SKA1
+# is larger in coins (a driver that reads the amount as VAR sees 1000 VAR), but in
+# atoms is past 2^63, where the node's TxOut.GetValue() returns 0; 5 SKA1 (5e18 atoms)
+# is what GetValue() returns as is, larger than any VAR output in atoms.
 # spvwallet gets the same, without the small outputs.
 VAR_MIX="10 18 5 7 1 15 3 25 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 8"
 SMALL_OUTPUTS=300
-SKA1_OUTPUTS="1000 1000 1000 1000"
+SKA1_OUTPUTS="1000 1000 1000 1000 5"
 # alpha must hold at least this much spendable VAR before it distributes.
 ALPHA_VAR_NEEDED=1600
 

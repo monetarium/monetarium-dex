@@ -17,22 +17,31 @@ START=$(./alpha_node getblockcount)
 [ "${START}" -ge ${MIN_HEIGHT} ] || fail "height ${START}, want at least ${MIN_HEIGHT}"
 
 # Budget per wallet, from harness.sh: 500 VAR in the mix plus 300 x 0.01 VAR (none
-# for spvwallet), and 4 x 1000 SKA1.
-SKA1_BUDGET=4000
+# for spvwallet), and 4 x 1000 + 5 SKA1.
+SKA1_BUDGET=4005
 for WB in trading1:503:300 trading2:503:300 spvwallet:500:0; do
   IFS=: read -r W VAR_BUDGET SMALL_BUDGET <<<"${WB}"
   VAR=$(./$W getbalance default 1 0 | jq -r '.balances[0].spendable')
   SKA1=$(./$W getbalance default 1 1 | jq -r '.balances[0].spendable')
   [ "$(echo "${VAR} == ${VAR_BUDGET}" | bc)" = 1 ] || fail "$W VAR ${VAR}, want ${VAR_BUDGET}"
   [ "$(echo "${SKA1} == ${SKA1_BUDGET}" | bc)" = 1 ] || fail "$W SKA1 ${SKA1}, want ${SKA1_BUDGET}"
-  # The shape: the small VAR outputs, and 4 SKA1 outputs each above the largest VAR one.
+  # The shape: the small VAR outputs, and 5 SKA1 outputs, each above the largest VAR one
+  # in atoms; one also above it in coins, and one below 2^63 atoms, which the node's
+  # TxOut.GetValue() returns rather than 0. Amounts stay strings, compared in bc.
   SMALL=$(./$W listunspent 1 9999999 '[]' '' 0 | jq '[.[] | select((.amount | tonumber) == 0.01)] | length')
   [ "${SMALL}" = "${SMALL_BUDGET}" ] || fail "$W has ${SMALL} outputs of 0.01 VAR, want ${SMALL_BUDGET}"
-  MAX_VAR=$(./$W listunspent 1 9999999 '[]' '' 0 | jq '[.[].amount | tonumber] | max')
-  SKA1_OUTS=$(./$W listunspent 1 9999999 '[]' '' 1 | jq -c '[.[].amount | tonumber]')
-  [ "$(echo "${SKA1_OUTS}" | jq length)" = 4 ] || fail "$W has SKA1 outputs ${SKA1_OUTS}, want 4"
-  [ "$(echo "${SKA1_OUTS}" | jq --argjson m "${MAX_VAR}" 'all(. > $m)')" = true ] ||
-    fail "$W SKA1 outputs ${SKA1_OUTS} not all above the largest VAR output ${MAX_VAR}"
+  MAX_VAR=$(./$W listunspent 1 9999999 '[]' '' 0 | jq -r '.[].amount' | sort -g | tail -1)
+  SKA1_OUTS=$(./$W listunspent 1 9999999 '[]' '' 1 | jq -r '[.[].amount] | join(" ")')
+  [ "$(wc -w <<<"${SKA1_OUTS}")" -eq 5 ] || fail "$W has SKA1 outputs ${SKA1_OUTS}, want 5"
+  ABOVE_IN_COINS=0 IN_INT64=0
+  for A in ${SKA1_OUTS}; do
+    [ "$(echo "${A} * 10^18 > ${MAX_VAR} * 10^8" | bc)" = 1 ] ||
+      fail "$W SKA1 output ${A} not above the largest VAR output ${MAX_VAR} in atoms"
+    [ "$(echo "${A} > ${MAX_VAR}" | bc)" = 1 ] && ABOVE_IN_COINS=1
+    [ "$(echo "${A} * 10^18 < 2^63" | bc)" = 1 ] && IN_INT64=1
+  done
+  [ ${ABOVE_IN_COINS} = 1 ] || fail "$W has no SKA1 output above the largest VAR output ${MAX_VAR} in coins"
+  [ ${IN_INT64} = 1 ] || fail "$W has no SKA1 output below 2^63 atoms: TxOut.GetValue() reads them all as 0"
   echo "$W: ${VAR} VAR, ${SKA1} SKA1"
 done
 
