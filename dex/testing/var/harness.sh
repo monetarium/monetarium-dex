@@ -260,7 +260,7 @@ tmux send-keys -t $SESSION:alpha "cd ${NODES_ROOT}/alpha" C-m
 tmux send-keys -t $SESSION:alpha "\"${NODE}\" --appdata=${NODES_ROOT}/alpha \
 --rpcuser=${RPC_USER} --rpcpass=${RPC_PASS} \
 --miningaddr=${ALPHA_MINING_ADDR} --rpclisten=127.0.0.1:${ALPHA_NODE_RPC_PORT} \
---txindex --rejectnonstd --listen=127.0.0.1:${ALPHA_NODE_PORT} \
+--txindex --listen=127.0.0.1:${ALPHA_NODE_PORT} \
 --debuglevel=debug --whitelist=127.0.0.0/8 --whitelist=::1 \
 --simnet; tmux wait-for -S alphavar" C-m
 
@@ -269,7 +269,7 @@ tmux send-keys -t $SESSION:beta "cd ${NODES_ROOT}/beta" C-m
 tmux send-keys -t $SESSION:beta "\"${NODE}\" --appdata=${NODES_ROOT}/beta \
 --rpcuser=${RPC_USER} --rpcpass=${RPC_PASS} \
 --listen=127.0.0.1:${BETA_NODE_PORT} --rpclisten=127.0.0.1:${BETA_NODE_RPC_PORT} \
---rejectnonstd --connect=127.0.0.1:${ALPHA_NODE_PORT} \
+--connect=127.0.0.1:${ALPHA_NODE_PORT} \
 --debuglevel=debug --whitelist=127.0.0.0/8 --whitelist=::1 \
 --simnet; tmux wait-for -S betavar" C-m
 
