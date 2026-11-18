@@ -16,8 +16,9 @@ merges stay clean.
 **Naming.** The new Go packages, and the directories that hold them, are named `mon`. `var`
 is a Go keyword, so it cannot be a package name, and DCRDEX names each directory after its
 package. This follows Monetarium's own renaming of Decred's daemon names: the coin `DCR` becomes
-`VAR`, while `dcrd` and `dcrwallet` become `mond` and `monwallet`, the names of the wallet's
-RPC client packages. It also
+`VAR`, while `dcrd` and `dcrwallet` become `mond` and `monwallet`. These two are Go package
+names of the node and wallet RPC clients, taken from `monetarium-wallet`; they are not the
+wallet's log tag (`MONW`) or its binary name (`monetarium-wallet`). It also
 follows DCRDEX's convention for chains with tokens: `client/asset/eth` holds ETH and its
 tokens, so SKA coins, if they are added later, sit in `mon` next to VAR. The symbol, the market
 names (`var_btc`) and the harness (`dex/testing/var/`, `~/dextest/var`) stay `var`.
