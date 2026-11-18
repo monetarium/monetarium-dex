@@ -26,8 +26,9 @@ for WB in trading1:503:300 trading2:503:300 spvwallet:500:0; do
   [ "$(echo "${VAR} == ${VAR_BUDGET}" | bc)" = 1 ] || fail "$W VAR ${VAR}, want ${VAR_BUDGET}"
   [ "$(echo "${SKA1} == ${SKA1_BUDGET}" | bc)" = 1 ] || fail "$W SKA1 ${SKA1}, want ${SKA1_BUDGET}"
   # The shape: the small VAR outputs, and 5 SKA1 outputs, each above the largest VAR one
-  # in atoms; one also above it in coins, and one below 2^63 atoms, which the node's
-  # TxOut.GetValue() returns rather than 0. Amounts stay strings, compared in bc.
+  # in atoms; at least one also above it in coins, and at least one below 2^63 atoms,
+  # which a driver parsing amounts at 1e18 atoms per coin into an int64 reads whole.
+  # Amounts stay strings, compared in bc.
   SMALL=$(./$W listunspent 1 9999999 '[]' '' 0 | jq '[.[] | select((.amount | tonumber) == 0.01)] | length')
   [ "${SMALL}" = "${SMALL_BUDGET}" ] || fail "$W has ${SMALL} outputs of 0.01 VAR, want ${SMALL_BUDGET}"
   MAX_VAR=$(./$W listunspent 1 9999999 '[]' '' 0 | jq -r '.[].amount' | sort -g | tail -1)

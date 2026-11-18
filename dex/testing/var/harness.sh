@@ -37,9 +37,9 @@ SKA1_EMISSION_HEIGHT=150
 
 # Budget per trading wallet: 500 VAR in the DCR harness's mix of amounts, 300
 # outputs of 0.01 VAR, and SKA1 outputs larger than the largest VAR output: 1000 SKA1
-# is larger in coins (a driver that reads the amount as VAR sees 1000 VAR), but in
-# atoms is past 2^63, where the node's TxOut.GetValue() returns 0; 5 SKA1 (5e18 atoms)
-# is what GetValue() returns as is, larger than any VAR output in atoms.
+# is larger in coins (a driver that reads the amount as VAR sees 1000 VAR), and 5 SKA1
+# in atoms (a driver that parses the amount at 1e18 atoms per coin reads 5e18, while
+# 1000 SKA1, 1e21 atoms, does not fit in 64 bits).
 # spvwallet gets the same, without the small outputs.
 VAR_MIX="10 18 5 7 1 15 3 25 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 8"
 SMALL_OUTPUTS=300
