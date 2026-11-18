@@ -71,3 +71,20 @@ func TestBipSymbolID(t *testing.T) {
 		})
 	}
 }
+
+func TestBipSymbolIDVar(t *testing.T) {
+	// Rebuild the lazily built map many times: its build order follows Go's
+	// random map iteration, so a duplicate "var" entry would fail only sometimes.
+	for i := 0; i < 1000; i++ {
+		symbolBipIDs = nil
+		if id, found := BipSymbolID("var"); !found || id != 9508 {
+			t.Errorf("rebuild %d: BipSymbolID(\"var\") = %d, %v, want 9508, true", i, id, found)
+		}
+		if sym := BipIDSymbol(9508); sym != "var" {
+			t.Errorf("rebuild %d: BipIDSymbol(9508) = %q, want \"var\"", i, sym)
+		}
+		if t.Failed() {
+			return
+		}
+	}
+}
