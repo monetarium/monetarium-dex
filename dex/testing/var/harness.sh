@@ -60,6 +60,13 @@ for t in jq bc tmux; do command -v $t >/dev/null || { echo "$t is required" >&2;
 echo "node:   $("$NODE" --version)"
 echo "wallet: $("$WALLET" --version)"
 echo "ctl:    $("$CTL" --version)"
+# The commit this run's log belongs to, "dirty" when the harness scripts differ from it.
+if REV=$(git -C "$(dirname "$0")" rev-parse --short HEAD 2>/dev/null); then
+  git -C "$(dirname "$0")" diff --quiet HEAD -- . || REV="${REV} dirty"
+else
+  REV=unknown # no git, or not a checkout
+fi
+echo "harness: ${REV}"
 
 export SHELL=$(which bash)
 
