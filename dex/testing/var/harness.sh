@@ -68,7 +68,8 @@ else
 fi
 echo "harness: ${REV}"
 
-export SHELL=$(which bash)
+SHELL=$(command -v bash)
+export SHELL
 
 if tmux has-session -t ${SESSION} 2>/dev/null; then
   echo "harness already running: stop it with ${NODES_ROOT}/harness-ctl/quit" >&2; exit 1
