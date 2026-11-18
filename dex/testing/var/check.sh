@@ -42,7 +42,7 @@ for WB in trading1:503:300 trading2:503:300 spvwallet:500:0; do
     [ "$(echo "${A} * 10^18 < 2^63" | bc)" = 1 ] && IN_INT64=1
   done
   [ ${ABOVE_IN_COINS} = 1 ] || fail "$W has no SKA1 output above the largest VAR output ${MAX_VAR} in coins"
-  [ ${IN_INT64} = 1 ] || fail "$W has no SKA1 output below 2^63 atoms: TxOut.GetValue() reads them all as 0"
+  [ ${IN_INT64} = 1 ] || fail "$W has no SKA1 output below 2^63 atoms: a driver parsing listunspent's amount at 1e18 atoms per coin into an int64 overflows on every one"
   echo "$W: ${VAR} VAR, ${SKA1} SKA1"
 done
 
