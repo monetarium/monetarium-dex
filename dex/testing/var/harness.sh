@@ -20,6 +20,7 @@ BETA_NODE_PORT="19670"
 BETA_NODE_RPC_PORT="19671"
 TRADING_WALLET1_PORT="19681"
 TRADING_WALLET2_PORT="19682"
+SPV_WALLET_PORT="19683"
 
 # The harness seed: it owns the mining address and the SKA1 emission address
 # (simnet sends the whole SKA1 emission to SsWKp7wtdTZYabYFYSc9cnxhwFEjA5g4pFc).
@@ -27,6 +28,7 @@ ALPHA_WALLET_SEED="b280922d2cffda44648346412c5ec97f429938105003730414f10b01e1402
 ALPHA_MINING_ADDR="SsXciQNTo3HuV5tX3yy4hXndRWgLMRVC7Ah"
 TRADING_WALLET1_SEED="31cc0eeb220aa5b1f1ab3b6c47529d737976af1a556b156a665408f1711c962f"
 TRADING_WALLET2_SEED="3db72efa55b9e6cce9c27dde9bea848c6199004f9b1ae2add3b04389495edb9c"
+SPV_WALLET_SEED="8a3f1e5c7b2d4906e1f8a7c3b5d2e4f60718293a4b5c6d7e8f90a1b2c3d4e5f6"
 
 # Simnet SKA1 emission key (the private key is 3; its public key is in the node's
 # simnet params). The emission window is heights 150-250.
@@ -35,11 +37,12 @@ SKA1_EMISSION_HEIGHT=150
 
 # Budget per trading wallet: 500 VAR in the DCR harness's mix of amounts, 300
 # outputs of 0.01 VAR, and SKA1 outputs each larger than the largest VAR output.
+# spvwallet gets the same, without the small outputs.
 VAR_MIX="10 18 5 7 1 15 3 25 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 24 8"
 SMALL_OUTPUTS=300
 SKA1_OUTPUTS="1000 1000 1000 1000"
 # alpha must hold at least this much spendable VAR before it distributes.
-ALPHA_VAR_NEEDED=1100
+ALPHA_VAR_NEEDED=1600
 
 NODES_ROOT=~/dextest/var
 
@@ -129,7 +132,11 @@ while HEIGHT=$(./alpha_node getblockcount) && [ "$HEIGHT" -lt "$TARGET" ]; do
   if [ "$HEIGHT" -ge 143 ]; then waitfor "5 votes at height $HEIGHT" votes_ready; fi
   ./alpha_node regentemplate >/dev/null
   sleep 0.05
-  ./alpha_node generate 1 >/dev/null
+  if ! OUT=$(./alpha_node generate 1 2>&1); then
+    # Another mine-alpha (the background miner) is mid-block: go round again.
+    case $OUT in *"already discrete mining"*) sleep 0.5; continue ;; esac
+    echo "$OUT" >&2; exit 1
+  fi
   # the alpha wallet must see the new tip before it can vote on it
   waitfor "alpha wallet on tip" wallet_on "$(./alpha_node getbestblockhash)"
 done
@@ -144,7 +151,7 @@ EOF
 
 cat > "${HCTL}/quit" <<EOF
 #!/usr/bin/env bash
-for w in miner w-alpha w-trading1 w-trading2; do tmux send-keys -t $SESSION:\$w C-c 2>/dev/null; done
+for w in miner w-alpha w-trading1 w-trading2 w-spvwallet; do tmux send-keys -t $SESSION:\$w C-c 2>/dev/null; done
 sleep 0.5
 tmux send-keys -t $SESSION:alpha C-c
 tmux send-keys -t $SESSION:beta C-c
@@ -166,8 +173,8 @@ EOF
 ################################################################################
 
 # write_wallet <name> <rpc port> [extra conf lines...]: <name>/<name>.conf, the file
-# the trade tests read, its ctl config and the harness-ctl/<name> script. Every
-# wallet is RPC-synced to alpha.
+# the trade tests read, its ctl config and the harness-ctl/<name> script. The extra
+# lines set how it syncs: RPC_SYNC or SPV_SYNC.
 write_wallet() {
   local NAME=$1 PORT=$2; shift 2
   local DIR="${NODES_ROOT}/${NAME}"
@@ -183,8 +190,6 @@ password=${RPC_PASS}
 rpclisten=127.0.0.1:${PORT}
 rpccert=${DIR}/rpc.cert
 pass=${WALLET_PASS}
-rpcconnect=127.0.0.1:${ALPHA_NODE_RPC_PORT}
-cafile=${NODES_ROOT}/alpha/rpc.cert
 EOF
   for line in "$@"; do echo "$line" >> "${DIR}/${NAME}.conf"; done
   cat > "${DIR}/${NAME}-ctl.conf" <<EOF
@@ -199,10 +204,14 @@ EOF
 EOF
 }
 
-write_wallet alpha ${ALPHA_WALLET_RPC_PORT} enablevoting=1
+RPC_SYNC=("rpcconnect=127.0.0.1:${ALPHA_NODE_RPC_PORT}" "cafile=${NODES_ROOT}/alpha/rpc.cert")
+SPV_SYNC=(spv=1 "spvconnect=127.0.0.1:${ALPHA_NODE_PORT}" "spvconnect=127.0.0.1:${BETA_NODE_PORT}")
+write_wallet alpha ${ALPHA_WALLET_RPC_PORT} "${RPC_SYNC[@]}" enablevoting=1
 # The many-small-outputs budget needs 300 fresh addresses, past the default gap limit.
-write_wallet trading1 ${TRADING_WALLET1_PORT} gaplimit=1000
-write_wallet trading2 ${TRADING_WALLET2_PORT} gaplimit=1000
+write_wallet trading1 ${TRADING_WALLET1_PORT} "${RPC_SYNC[@]}" gaplimit=1000
+write_wallet trading2 ${TRADING_WALLET2_PORT} "${RPC_SYNC[@]}" gaplimit=1000
+# For the item 6 test, which checks the external wallet's own SPV publish path.
+write_wallet spvwallet ${SPV_WALLET_PORT} "${SPV_SYNC[@]}"
 chmod +x "${HCTL}"/*
 
 waitfor() { # waitfor <desc> <cmd...>: retry for 60s
@@ -263,6 +272,7 @@ echo "Creating wallets"
 create_wallet alpha ${ALPHA_WALLET_SEED}
 create_wallet trading1 ${TRADING_WALLET1_SEED}
 create_wallet trading2 ${TRADING_WALLET2_SEED}
+create_wallet spvwallet ${SPV_WALLET_SEED}
 
 # Fee account on alpha for the dcrdex server's regXPub.
 "${HCTL}/alpha" createnewaccount server_fees >/dev/null
@@ -303,13 +313,16 @@ echo "alpha: $(alpha_var) VAR spendable at height $(height)"
 echo "Funding trading wallets"
 T1=$(./trading1 getnewaddress)
 T2=$(./trading2 getnewaddress)
+S=$(./spvwallet getnewaddress)
 for AMT in ${VAR_MIX}; do
-  ./alpha sendmany default "{\"${T1}\":\"${AMT}\",\"${T2}\":\"${AMT}\"}" >/dev/null
+  ./alpha sendmany default "{\"${T1}\":\"${AMT}\",\"${T2}\":\"${AMT}\",\"${S}\":\"${AMT}\"}" >/dev/null
 done
 SMALL="{"
 SKA1="{"
 for W in trading1 trading2; do
   for _ in $(seq ${SMALL_OUTPUTS}); do SMALL="${SMALL}\"$(./$W getnewaddress)\":\"0.01\","; done
+done
+for W in trading1 trading2 spvwallet; do
   for AMT in ${SKA1_OUTPUTS}; do SKA1="${SKA1}\"$(./$W getnewaddress)\":\"${AMT}\","; done
 done
 ./alpha sendmany default "${SMALL%,}}" >/dev/null
@@ -317,11 +330,11 @@ done
 sleep 0.5
 ./mine-alpha 2
 TIP=$(./alpha_node getbestblockhash)
-for W in trading1 trading2; do
+for W in trading1 trading2 spvwallet; do
   waitfor "$W on tip" eval "[ \"\$(./$W getbestblock | jq -r .hash)\" = ${TIP} ]"
 done
 
-for W in trading1 trading2; do
+for W in trading1 trading2 spvwallet; do
   echo "$W: $(./$W getbalance default 1 0 | jq -r '.balances[0].spendable') VAR," \
     "$(./$W getbalance default 1 1 | jq -r '.balances[0].spendable') SKA1"
 done

@@ -89,10 +89,10 @@ premine and its own chain, so the harness mines from genesis.
     the external wallet's own SPV publish path.
 - **Files and ctl scripts:** `<name>/<name>.conf` per wallet, the file `simnet_trade.go`
   reads. In `harness-ctl/`: `./alpha`, `./alpha_node`, `./beta_node`, `./trading1`,
-  `./trading2`, `./fund`, `./quit`, and `./mine-alpha N`. Past height 143, `./mine-alpha N`
-  waits before each block until all 5 votes are in the mempool. Simnet needs 3 of 5, but
-  alpha owns every ticket, and votes left over from a block mined at 3 would count toward the
-  next one.
+  `./trading2`, `./spvwallet`, `./fund`, `./quit`, and `./mine-alpha N`. Past height 143,
+  `./mine-alpha N` waits before each block until all 5 votes are in the mempool. Simnet needs
+  3 of 5, but alpha owns every ticket, and votes left over from a block mined at 3 would count
+  toward the next one.
 - **Chain build:**
   1. Mine to 34, buy tickets, and mine to 151 with votes.
   2. Emit SKA1 inside its window (heights 150-250): `importemissionkey` with the simnet
@@ -111,7 +111,7 @@ premine and its own chain, so the harness mines from genesis.
   `spvwallet` gets the same VAR mix and SKA1 outputs.
 - **Optional with `VSP=1`, used only by step 10:** `monetarium-vsp` (`vspm`) on simnet, a
   voting wallet behind it (`--enablevoting --manualtickets`), and a ticket-buying wallet that
-  uses it.
+  uses it. It lands with step 10.
 
 **Done when** `dex/testing/var/check.sh` passes twice in a row from a clean `~/dextest/var`.
 It asserts:
@@ -119,13 +119,14 @@ It asserts:
 - the height reached, and 20 further blocks mined, each with all 5 votes;
 - alpha's node finds a mined transaction by txid (`--txindex`), alpha's wallet has the
   `server_fees` account, and beta is on alpha's tip;
-- the VAR and SKA1 balances of each trading wallet match the budget
-  (`getbalance … <cointype>`), with 300 outputs of 0.01 VAR and every SKA1 output above
-  the largest VAR output;
+- the VAR and SKA1 balances of each trading wallet and `spvwallet` match the budget
+  (`getbalance … <cointype>`), with 300 outputs of 0.01 VAR in each trading wallet and every
+  SKA1 output above the largest VAR output;
+- `spvwallet` is in SPV mode with both nodes as peers;
 - `./fund` gets its transaction mined;
 - **negative controls**, each sent to alpha and each required to fail with the node's error:
   - a transaction with a dust output;
-  - a fee 1 atom below the minimum relay fee;
+  - a fee 1 atom below the minimum relay fee, while the minimum itself is accepted;
   - a fee above the ceiling with high fees not allowed;
   - a transaction over 100 000 bytes.
 
@@ -485,7 +486,8 @@ measurements are written into this file.
 
 ## Step 10. Item 8: staker-fee outputs
 
-**Form:** harness with `VSP=1`. The DEX's RPC wallet is an external wallet that buys tickets
+**Form:** harness with `VSP=1`, added in this step, which also pins the `monetarium-vsp`
+version in Versions. The DEX's RPC wallet is an external wallet that buys tickets
 through `vspm`, into the account the DEX funds orders from. The native SPV wallet would get
 staker-fee outputs only by staking through DCRDEX, which is out of scope. Its share of item 8
 is the unit test in step 6.
