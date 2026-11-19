@@ -359,9 +359,8 @@ func (c *tRPCClient) EstimateSmartFee(_ context.Context, confirmations int64, mo
 	if c.smartFee != "" {
 		return &chainjson.EstimateSmartFeeResult{FeeRate: c.smartFee}, nil
 	}
-	optimalRate := float64(optimalFeeRate) * 1e-5 // optimalFeeRate: 22 atoms/byte = 0.00022 DCR/KB * 1e8 atoms/DCR * 1e-3 KB/Byte
-	// fmt.Println((float64(optimalFeeRate)*1e-5)-0.00022)
-	return &chainjson.EstimateSmartFeeResult{FeeRate: toCoinStr(optimalRate)}, nil
+	// The node answers in atoms/kB: optimalFeeRate atoms/B is 1000 times that.
+	return &chainjson.EstimateSmartFeeResult{FeeRate: strconv.FormatUint(optimalFeeRate*1000, 10)}, nil
 }
 
 func (c *tRPCClient) SendRawTransaction(_ context.Context, tx *wire.MsgTx, allowHighFees bool) (*chainhash.Hash, error) {

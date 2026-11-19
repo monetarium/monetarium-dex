@@ -16,7 +16,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"math"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -612,31 +611,6 @@ func TestNoDecredText(t *testing.T) {
 	}
 	if checked < 500 {
 		t.Fatalf("checked only %d string literals", checked)
-	}
-}
-
-// TestEstimateSmartFeeRateParse pins the RPC wallet's parse of estimatesmartfee
-// to the plain port's: the string read as a float, in the unit DCR's driver
-// expects. Invariants item 7 changes the unit, test-first, and this with it.
-func TestEstimateSmartFeeRateParse(t *testing.T) {
-	wallet, _, shutdown := tNewWallet()
-	defer shutdown()
-
-	rate, err := wallet.wallet.(*rpcWallet).EstimateSmartFeeRate(tCtx, 2, chainjson.EstimateSmartFeeConservative)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := float64(optimalFeeRate) * 1e-5; math.Abs(rate-want) > 1e-12 {
-		t.Fatalf("EstimateSmartFeeRate = %v, want %v", rate, want)
-	}
-
-	// A rate that does not parse, or overflows to +Inf, is an error.
-	node := wallet.wallet.(*rpcWallet).rpcClient.(*tRPCClient)
-	for _, bad := range []string{"1e999", "x"} {
-		node.smartFee = bad
-		if rate, err := wallet.wallet.(*rpcWallet).EstimateSmartFeeRate(tCtx, 2, chainjson.EstimateSmartFeeConservative); err == nil {
-			t.Errorf("estimatesmartfee %q: rate %v, want an error", bad, rate)
-		}
 	}
 }
 

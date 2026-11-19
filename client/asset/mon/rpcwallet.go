@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 
 	"decred.org/dcrdex/client/asset"
 	"decred.org/dcrdex/dex"
+	"github.com/monetarium/monetarium-node/blockchain/stake"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/chaincfg/chainhash"
 	"github.com/monetarium/monetarium-node/cointype"
@@ -574,10 +576,10 @@ func (w *rpcWallet) LockedOutputs(ctx context.Context, acctName string) ([]chain
 }
 
 // EstimateSmartFeeRate returns a smart feerate estimate using the
-// estimatesmartfee rpc.
+// estimatesmartfee rpc, in atoms/kB.
 // Part of the Wallet interface.
-func (w *rpcWallet) EstimateSmartFeeRate(ctx context.Context, confTarget int64, mode chainjson.EstimateSmartFeeMode) (float64, error) {
-	// estimatesmartfee 1 returns extremely high rates (e.g. 0.00817644).
+func (w *rpcWallet) EstimateSmartFeeRate(ctx context.Context, confTarget int64, mode chainjson.EstimateSmartFeeMode) (uint64, error) {
+	// estimatesmartfee 1 doubles the rate (the node's next-block multiplier).
 	if confTarget < 2 {
 		confTarget = 2
 	}
@@ -585,7 +587,12 @@ func (w *rpcWallet) EstimateSmartFeeRate(ctx context.Context, confTarget int64, 
 	if err != nil {
 		return 0, translateRPCCancelErr(err)
 	}
-	return strconv.ParseFloat(estimateFeeResult.FeeRate, 64)
+	// The node answers in atoms/kB, as an integer string.
+	atomsPerKB, err := strconv.ParseUint(estimateFeeResult.FeeRate, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("estimatesmartfee feerate %q: %w", estimateFeeResult.FeeRate, err)
+	}
+	return atomsPerKB, nil
 }
 
 // Unspents fetches unspent outputs for the specified account using rpc
@@ -596,7 +603,12 @@ func (w *rpcWallet) Unspents(ctx context.Context, acctName string) ([]*walletjso
 	// minconf, maxconf (rpcdefault=9999999), [address], account
 	params := anylist{0, 9999999, nil, acctName}
 	err := w.rpcClientRawRequest(ctx, methodListUnspent, params, &unspents)
-	return unspents, err
+	// The wallet lists every coin type when given none, each amount in its
+	// output's own coin: only VAR funds VAR transactions. A staker-fee
+	// output can be respent by a miner without the owner's key.
+	return slices.DeleteFunc(unspents, func(u *walletjson.ListUnspentResult) bool {
+		return u.CoinType != uint8(cointype.CoinTypeVAR) || u.TxType == int(stake.TxTypeSSFee)
+	}), err
 }
 
 // InternalAddress returns a change address from the specified account.

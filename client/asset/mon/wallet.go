@@ -200,8 +200,8 @@ type tipNotifier interface {
 // FeeRateEstimator is satisfied by a Wallet that can provide fee rate
 // estimates.
 type FeeRateEstimator interface {
-	// EstimateSmartFeeRate returns a smart feerate estimate.
-	EstimateSmartFeeRate(ctx context.Context, confTarget int64, mode chainjson.EstimateSmartFeeMode) (float64, error)
+	// EstimateSmartFeeRate returns a smart feerate estimate in atoms/kB.
+	EstimateSmartFeeRate(ctx context.Context, confTarget int64, mode chainjson.EstimateSmartFeeMode) (uint64, error)
 }
 
 // Mempooler is satisfied by a Wallet that can provide mempool info.
