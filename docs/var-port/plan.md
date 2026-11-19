@@ -287,8 +287,8 @@ returns atoms/kB as an integer string.
 ## Step 5. Client driver, RPC wallet, `client/asset/mon`
 
 The port of `client/asset/dcr`, registered in `client/asset/importall`. It is tested with
-`tNewWallet`/`tRPCClient`, whose `listunspent` stub now returns VAR and SKA1 outputs together,
-as the wallet does when no coin type is given. Redeem, refund and bond refund already sign
+`tNewWallet`/`tRPCClient`; item 6's fixtures list VAR and SKA1 outputs together, as the wallet
+does when no coin type is given. Redeem, refund and bond refund already sign
 for real in these tests: `createSig` signs with the key `AddressPrivKey` returns. Swap,
 send, withdraw, split and bond go through the `signrawtransaction` stub, which today returns
 the transaction unsigned. That stub gets a real signer.
@@ -332,14 +332,21 @@ the transaction unsigned. That stub gets a real signer.
   - The test also records how many inputs coin selection picks, the question the item leaves
     open.
 - **Item 6, `TestFundingIgnoresSKA`.** The stub's SKA1 outputs have step 1's shape (four of
-  1000 SKA1 and one of 5 SKA1), and every amount funded, sent or withdrawn is above the stub's
-  largest VAR output, so a driver that misread an SKA1 output would pick it before any VAR
-  one. None of the following may select or lock an SKA outpoint:
-  - `FundOrder` (standard and split);
+  1000 SKA1 and one of 5 SKA1), plus one of 1000 SKA2, all confirmed, spendable P2PKH like the
+  VAR ones, and every amount funded, sent or withdrawn is above the stub's largest VAR output
+  (but for one multi-order of 1 VAR), so a driver that misread an SKA output would pick it
+  before any VAR one. A second fixture adds an SKA1 output with 18 decimals, which a driver
+  that parsed it as VAR would refuse, failing the whole list; a third moves the SKA outputs into
+  the trading account. On each, every one of the following must succeed without selecting or
+  locking an SKA outpoint:
+  - `FundOrder` (standard and split; the split must be sent);
+  - `FundMultiOrder` (with and without a split; every order must be funded);
   - `Send`;
-  - `Withdraw`.
+  - `Withdraw`;
+  - `MakeBondTx`.
 
   This covers the coins passed to `lockunspent` and the inputs of every built transaction.
+  `FundingCoins`, asked for an SKA coin, must not find it.
 - **Item 7, `TestFeeRateUnits`.** The same table as step 4, through `FeeRate`. This covers an
   RPC wallet in RPC sync mode; in SPV mode (the native wallet, or an RPC wallet whose
   dcrwallet syncs by SPV) the driver never calls `estimatesmartfee`, and its rates are

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -596,7 +597,11 @@ func (w *rpcWallet) Unspents(ctx context.Context, acctName string) ([]*walletjso
 	// minconf, maxconf (rpcdefault=9999999), [address], account
 	params := anylist{0, 9999999, nil, acctName}
 	err := w.rpcClientRawRequest(ctx, methodListUnspent, params, &unspents)
-	return unspents, err
+	// The wallet lists every coin type when given none, each amount in its
+	// output's own coin: only VAR funds VAR transactions.
+	return slices.DeleteFunc(unspents, func(u *walletjson.ListUnspentResult) bool {
+		return u.CoinType != uint8(cointype.CoinTypeVAR)
+	}), err
 }
 
 // InternalAddress returns a change address from the specified account.
