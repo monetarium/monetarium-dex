@@ -3,16 +3,84 @@ package mon
 // Tests for the items of docs/var-port/invariants.md, over the RPC wallet.
 
 import (
+	"encoding/hex"
 	"fmt"
+	"math/big"
 	"testing"
 	"time"
 
 	"decred.org/dcrdex/client/asset"
 	"decred.org/dcrdex/dex"
+	dexmon "decred.org/dcrdex/dex/networks/mon"
 	dcrsecp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	chainjson "github.com/monetarium/monetarium-node/rpc/jsonrpc/types"
+	"github.com/monetarium/monetarium-node/txscript/stdaddr"
 	"github.com/monetarium/monetarium-node/wire"
 	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
 )
+
+// TestAuditContractSKAOutput is item 1: a counterparty contract that pays the
+// right P2SH in SKA1 must fail the audit, whether the audit reads the
+// transaction (txData), the node's gettxout, which reports neither the coin
+// type nor an SKA output's value, or the block a filter scan finds.
+func TestAuditContractSKAOutput(t *testing.T) {
+	secretHash := make([]byte, 32)
+	contract, err := dexmon.MakeContract(tPKHAddr.String(), tPKHAddr.String(), secretHash, time.Now().Add(12*time.Hour).Unix(), tChainParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2sh, _ := stdaddr.NewAddressScriptHashV0(contract, tChainParams)
+	_, pkScript := p2sh.PaymentScript()
+
+	expected := 5 * int64(tLotSize) // the VAR atoms the auditor expects
+	for _, ska := range []*big.Int{big.NewInt(expected), new(big.Int).Mul(big.NewInt(expected), big.NewInt(1e10))} {
+		tx := wire.NewMsgTx()
+		tx.AddTxIn(&wire.TxIn{})
+		tx.AddTxOut(&wire.TxOut{CoinType: 1, SKAValue: ska, PkScript: pkScript})
+		txData, err := tx.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		txHash := tx.TxHash()
+		coinID := toCoinID(&txHash, 0)
+
+		t.Run("txData/"+ska.String(), func(t *testing.T) {
+			wallet, _, shutdown := tNewWallet()
+			defer shutdown()
+			if audit, err := wallet.AuditContract(coinID, contract, txData, false); err == nil {
+				t.Fatalf("SKA1 contract passed the audit, valued %d", audit.Coin.Value())
+			}
+		})
+		t.Run("gettxout/"+ska.String(), func(t *testing.T) {
+			wallet, node, shutdown := tNewWallet()
+			defer shutdown()
+			node.txOutRes[newOutPoint(&txHash, 0)] = &chainjson.GetTxOutResult{ // as the node reports an SKA output
+				Confirmations: 1,
+				ScriptPubKey:  chainjson.ScriptPubKeyResult{Hex: hex.EncodeToString(pkScript)},
+			}
+			if audit, err := wallet.AuditContract(coinID, contract, nil, false); err == nil {
+				t.Fatalf("SKA1 contract passed the audit, valued %d", audit.Coin.Value())
+			}
+		})
+		t.Run("block scan/"+ska.String(), func(t *testing.T) {
+			wallet, node, shutdown := tNewWalletMonitorBlocks(false) // currentTip changes below
+			defer shutdown()
+			mined, err := msgTxFromBytes(txData) // as a block carries it
+			if err != nil {
+				t.Fatal(err)
+			}
+			node.blockchain.addRawTx(1, mined) // not unspent per gettxout: the audit scans block filters
+			tip, err := wallet.getBestBlock(wallet.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wallet.currentTip.Store(tip)
+			if audit, err := wallet.AuditContract(coinID, contract, nil, false); err == nil {
+				t.Fatalf("SKA1 contract passed the audit, valued %d", audit.Coin.Value())
+			}
+		})
+	}
+}
 
 const tTradingAcct = "tTradingAcct"
 

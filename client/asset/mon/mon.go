@@ -3481,6 +3481,12 @@ func (dcr *ExchangeWallet) AuditContract(coinID, contract, txData dex.Bytes, reb
 		txTree = determineTxTree(contractTx)
 	}
 
+	// Only a VAR output pays a VAR contract. gettxout reports neither the coin
+	// type nor an SKA output's value, so there an SKA output shows as zero.
+	if contractTxOut.CoinType != cointype.CoinTypeVAR || contractTxOut.Value <= 0 {
+		return nil, fmt.Errorf("contract output %s:%d pays no VAR", txHash, vout)
+	}
+
 	// Validate contract output.
 	// Script must be P2SH, with 1 address and 1 required signature.
 	scriptClass, addrs := stdscript.ExtractAddrs(contractTxOut.Version, contractTxOut.PkScript, dcr.chainParams)

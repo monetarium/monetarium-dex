@@ -296,7 +296,9 @@ the transaction unsigned. That stub gets a real signer.
 **Tests**, written first:
 
 - **Item 1, `TestAuditContractSKAOutput`.** Given a counterparty contract paid in SKA1 (both
-  item 1 variants), `AuditContract` must return an error.
+  item 1 variants), `AuditContract` must return an error from each source it reads: the
+  transaction data, the node's `gettxout`, which reports no coin type and a zero value for an
+  SKA output, and the block a filter scan finds.
 - **Item 2, `TestSignVerify`.**
   - Each kind the driver builds, built through the `ExchangeWallet` methods:
     - swap, redeem, refund;
