@@ -12,12 +12,64 @@ import (
 	"decred.org/dcrdex/client/asset"
 	"decred.org/dcrdex/dex"
 	dexmon "decred.org/dcrdex/dex/networks/mon"
+	"github.com/decred/base58"
 	dcrsecp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/monetarium/monetarium-node/chaincfg"
+	"github.com/monetarium/monetarium-node/dcrec"
+	"github.com/monetarium/monetarium-node/dcrutil"
 	chainjson "github.com/monetarium/monetarium-node/rpc/jsonrpc/types"
 	"github.com/monetarium/monetarium-node/txscript/stdaddr"
 	"github.com/monetarium/monetarium-node/wire"
 	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
 )
+
+// TestDecredAddressRejected is item 10: on mainnet, where Monetarium's address
+// prefixes differ from Decred's, a Decred address must be refused. Each case
+// has a control: the same key hash as a Monetarium mainnet address passes.
+func TestDecredAddressRejected(t *testing.T) {
+	const decredAddr = "DsYXjAK3UiTVN9js8v9G21iRbr2wPty7f12" // Decred mainnet P2PKH
+	pkh, _, err := base58.CheckDecode(decredAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainnet := chaincfg.MainNetParams()
+	monAddr, err := stdaddr.NewAddressPubKeyHashEcdsaSecp256k1V0(pkh, mainnet)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wallet, node, shutdown := tNewWalletMonitorBlocks(false) // chainParams changes below
+	defer shutdown()
+	wallet.chainParams = mainnet
+	node.changeAddr, node.newAddr = monAddr, monAddr
+	node.privWIF, err = dcrutil.NewWIF(append(make([]byte, 31), 1), mainnet.PrivateKeyID, dcrec.STEcdsaSecp256k1) // signs Swap's refund
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, addr := range []string{decredAddr, monAddr.String()} {
+		wantOK := addr != decredAddr
+		if got := wallet.ValidateAddress(addr); got != wantOK {
+			t.Errorf("ValidateAddress(%s) = %v", addr, got)
+		}
+		node.unspent = []walletjson.ListUnspentResult{*tUnspent(0, "10")}
+		if _, err := wallet.Send(addr, 1e8, feeSuggestion); (err == nil) != wantOK {
+			t.Errorf("Send to %s: error %v", addr, err)
+		}
+		if _, err := wallet.Withdraw(addr, 1e8, feeSuggestion); (err == nil) != wantOK {
+			t.Errorf("Withdraw to %s: error %v", addr, err)
+		}
+		// The counterparty's address, which Swap pays the contract to.
+		swaps := &asset.Swaps{
+			Inputs:    asset.Coins{newOutput(tTxHash, 0, 10e8, wire.TxTreeRegular)},
+			Contracts: []*asset.Contract{{Address: addr, Value: 1e8, SecretHash: make([]byte, 32), LockTime: uint64(time.Now().Unix())}},
+			FeeRate:   feeSuggestion,
+		}
+		if _, _, _, err := wallet.Swap(swaps); (err == nil) != wantOK {
+			t.Errorf("Swap to %s: error %v", addr, err)
+		}
+	}
+}
 
 // TestAuditContractSKAOutput is item 1: a counterparty contract that pays the
 // right P2SH in SKA1 must fail the audit, whether the audit reads the

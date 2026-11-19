@@ -359,7 +359,7 @@ the transaction unsigned. That stub gets a real signer.
   must be refused by:
   - `ValidateAddress`;
   - `Send` and `Withdraw`;
-  - the audit of a counterparty's recipient address.
+  - `Swap`, for the counterparty address it pays the contract to.
 
 **Done when** these tests pass, together with the ported `client/asset/dcr` unit tests.
 
