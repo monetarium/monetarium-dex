@@ -170,8 +170,7 @@ theirs as they land. Upstream DCRDEX's CI runs no harness tests: `run_tests.sh` 
      since a runner has no terminal.
   3. Run `check.sh`.
   4. From step 7 on, also run `go test -tags harness ./client/asset/mon/...`. This item is
-     added when the package lands: before that, the pattern matches nothing and `go test`
-     fails.
+     added with step 7, when `simnet_test.go` lands.
 - **Nightly job (new):**
   - the BTC, LTC and `dcrdex` harnesses (with PostgreSQL, and `bitcoind`, `litecoind` and
     `vspm` installed on the runner), and the step 8 trade tests on `varbtc`, `varltc` and
@@ -287,11 +286,12 @@ returns atoms/kB as an integer string.
 ## Step 5. Client driver, RPC wallet, `client/asset/mon`
 
 The port of `client/asset/dcr`, registered in `client/asset/importall`. It is tested with
-`tNewWallet`/`tRPCClient`; item 6's fixtures list VAR and SKA1 outputs together, as the wallet
-does when no coin type is given. Redeem, refund and bond refund already sign
-for real in these tests: `createSig` signs with the key `AddressPrivKey` returns. Swap,
-send, withdraw, split and bond go through the `signrawtransaction` stub, which today returns
-the transaction unsigned. That stub gets a real signer.
+`tNewWallet`/`tRPCClient`; item 6's fixtures list VAR and SKA outputs together, as the wallet
+does when no coin type is given. Redeem, refund and bond refund already sign for real in these
+tests: `createSig` signs redeem and refund with the key `AddressPrivKey` returns, and the bond
+refund signs with the bond key its caller passes. Swap, send, withdraw, split and bond go
+through the `signrawtransaction` stub, which today returns the transaction unsigned. That stub
+gets a real signer.
 
 **Tests**, written first:
 
@@ -306,41 +306,48 @@ the transaction unsigned. That stub gets a real signer.
     - send, withdraw, split.
   - Each is run through Monetarium's script engine and must verify. The flags are the node's
     standard verify flags (`BaseStandardVerifyFlags` plus the agenda flags the node adds),
-    copied into the test because they live in the node's `internal/mempool`. Step 7's
-    broadcast against the node catches any drift.
-  - Its txid must equal the txid of the same bytes decoded with Monetarium's `wire`.
+    copied into the test because the node does not export them (`internal/mempool` and its
+    main package). Step 7's broadcast against the node catches any drift.
+  - The txid in the coin ID the method returns (for a split, its funding coins' txid) must
+    equal the txid of the bytes passed to `sendrawtransaction`, decoded with Monetarium's
+    `wire`.
   - `v1.0.6` has no private redeem or refund. They come under this test once an upstream
     merge brings them.
-- **Item 3, `TestFeeRateCeiling`.** No path may build a transaction above 1000 atoms/B:
+- **Item 3, `TestFeeRateCeiling`.** No path may build a transaction whose fee exceeds the
+  node's ceiling, max(size × 1000, 1 000 000) atoms at its Monetarium serialized size:
   - a swap at the market's `MaxFeeRate` with the maximum swap fee bump (2.0×);
-  - a redeem and a refund with the maximum fee bump (2.0×) over a high network rate;
+  - a redeem with the maximum fee bump (2.0×) over a high network rate;
+  - a refund at a high rate from its caller;
   - a send;
   - a bond refund.
 
-  The test checks the fee and size of every transaction passed to `sendrawtransaction`. A clamp
-  in the driver is the guard in both modes, because SPV mode ignores the high-fee flag.
-- **Item 4, `TestRedeemRefundAtMinRelay`.** A redeem and a refund at 10 atoms/B, signed with
-  a key ground so the signature has a 33-byte R and a 32-byte S. Signatures are deterministic
-  (RFC 6979), so the ground key becomes a fixture. Each transaction must pay at least the
-  node's minimum fee for its Monetarium serialized size.
-- **Item 4, `TestDustChange`.** A swap whose remainder after the fee is 6040 atoms at
-  10 atoms/B must either create no change output or create change of at least the node's
-  dust threshold, 6060.
+  The test checks the fee of every transaction passed to `sendrawtransaction` against that
+  ceiling. A clamp in the driver is the guard for both DEX wallet types, because the native SPV
+  wallet ignores the high-fee flag.
+- **Item 4, `TestRedeemRefundAtMinRelay`.** A redeem and a refund at 10 atoms/B, each signed
+  with a key ground for that transaction so its signature has a 33-byte R and a 32-byte S.
+  Signatures are deterministic (RFC 6979), so the ground keys become fixtures. Each
+  transaction must pay at least the node's minimum fee for its Monetarium serialized size.
+- **Item 4, `TestDustChange`.** A swap whose change would be 6040 atoms at 10 atoms/B, its own
+  output's fee counted, must either create no change output or create change of at least the
+  node's dust threshold, 6060.
 - **Item 5, `TestLargeSwapRefused`.**
-  - Setup: a wallet holding 300 outputs of 0.01 VAR, and an order needing about 250 of them.
-  - Pass: the driver must not broadcast a swap larger than 37 500 bytes, VAR's share of a
-    default block under SKA load. It may refuse the order at funding or fund it within the
-    cap; either is accepted.
+  - Setup: a wallet holding only 300 outputs of 0.01 VAR, and an order needing about 250 of
+    them.
+  - Pass: the driver must not broadcast any transaction (swap or split) larger than
+    37 500 bytes, VAR's share of a default block under SKA load. It may refuse the order at
+    funding or fund it within the cap; either is accepted.
   - The test also records how many inputs coin selection picks, the question the item leaves
     open.
 - **Item 6, `TestFundingIgnoresSKA`.** The stub's SKA1 outputs have step 1's shape (four of
   1000 SKA1 and one of 5 SKA1), plus one of 1000 SKA2, all confirmed, spendable P2PKH like the
   VAR ones, and every amount funded, sent or withdrawn is above the stub's largest VAR output
-  (but for one multi-order of 1 VAR), so a driver that misread an SKA output would pick it
-  before any VAR one. A second fixture adds an SKA1 output with 18 decimals, which a driver
-  that parsed it as VAR would refuse, failing the whole list; a third moves the SKA outputs into
-  the trading account. On each, every one of the following must succeed without selecting or
-  locking an SKA outpoint:
+  (but for one multi-order of 1 VAR), so a driver that misread an SKA output as VAR would
+  select one: coin selection takes the set that over-funds least, which the 5 SKA1 output
+  enters. A second fixture adds an SKA1 output with 18 decimals, which a driver that parsed it
+  as VAR would refuse, failing the whole list; a third, with the wallet configured with a
+  trading account, moves the first fixture's SKA outputs into it. On each, every one of the
+  following must succeed without selecting or locking an SKA outpoint:
   - `FundOrder` (standard and split; the split must be sent);
   - `FundMultiOrder` (with and without a split; every order must be funded);
   - `Send`;
@@ -349,11 +356,11 @@ the transaction unsigned. That stub gets a real signer.
 
   This covers the coins passed to `lockunspent` and the inputs of every built transaction.
   `FundingCoins`, asked for an SKA coin, must not find it.
-- **Item 7, `TestFeeRateUnits`.** The same table as step 4, through `FeeRate`; an answer that
-  is not an unsigned integer, such as Decred's coins/kB, is an error. This covers an
-  RPC wallet in RPC sync mode; in SPV mode (the native wallet, or an RPC wallet whose
-  dcrwallet syncs by SPV) the driver never calls `estimatesmartfee`, and its rates are
-  `TestFeeOracle`'s (step 6).
+- **Item 7, `TestFeeRateUnits`.** The same table as step 4, through `FeeRate`;
+  `EstimateSmartFeeRate` returns an error for an answer that is not an unsigned integer, such
+  as Decred's coins/kB. This covers an RPC wallet whose external wallet is RPC-synced. For the
+  native SPV wallet, and for an RPC wallet whose external wallet is SPV-synced, the driver
+  never calls `estimatesmartfee`, and its rates are `TestFeeOracle`'s (step 6).
 - **Item 8, `TestStakerFeeNotSelected`.** Outputs of staker-fee transactions in the funding
   account must never be selected, whatever their age, through the paths item 6's test runs.
   The wallet lists one once matured, spendable, with an `OP_SSGEN`-tagged P2PKH script.
@@ -376,8 +383,8 @@ signer, so item 2 holds here too.
 
 - **Item 6:** `TestSPVFundingIgnoresSKA` and `TestTransferAccountIgnoresSKA`. The first
   repeats step 5's item 6 test over the SPV seam. The second covers the native wallet's
-  account transfer. The first runs with step 5's SKA1 outputs and amounts, the second with
-  step 5's SKA1 outputs only (it takes no amounts); neither may select or lock an SKA outpoint.
+  account transfer. The first runs with step 5's SKA outputs and amounts, the second with
+  step 5's SKA outputs only (it takes no amounts); neither may select or lock an SKA outpoint.
 - **Item 7, `TestFeeOracle`.** The oracle fetch becomes injectable; today its URL is hard-coded.
   - The VAR driver's oracle is `monetarium.online/insight/api/utils/estimatefee` on mainnet
     and the testnet explorer's same route on testnet. That the testnet route answers is
