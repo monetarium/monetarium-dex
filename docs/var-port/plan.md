@@ -355,7 +355,8 @@ the transaction unsigned. That stub gets a real signer.
   dcrwallet syncs by SPV) the driver never calls `estimatesmartfee`, and its rates are
   `TestFeeOracle`'s (step 6).
 - **Item 8, `TestStakerFeeNotSelected`.** Outputs of staker-fee transactions in the funding
-  account must never be selected, whatever their age.
+  account must never be selected, whatever their age, through the paths item 6's test runs.
+  The wallet lists one once matured, spendable, with an `OP_SSGEN`-tagged P2PKH script.
 - **Item 10, `TestDecredAddressRejected`.** On mainnet parameters, a Decred mainnet address
   must be refused by:
   - `ValidateAddress`;

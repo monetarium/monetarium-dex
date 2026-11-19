@@ -21,6 +21,7 @@ import (
 
 	"decred.org/dcrdex/client/asset"
 	"decred.org/dcrdex/dex"
+	"github.com/monetarium/monetarium-node/blockchain/stake"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/chaincfg/chainhash"
 	"github.com/monetarium/monetarium-node/cointype"
@@ -603,9 +604,10 @@ func (w *rpcWallet) Unspents(ctx context.Context, acctName string) ([]*walletjso
 	params := anylist{0, 9999999, nil, acctName}
 	err := w.rpcClientRawRequest(ctx, methodListUnspent, params, &unspents)
 	// The wallet lists every coin type when given none, each amount in its
-	// output's own coin: only VAR funds VAR transactions.
+	// output's own coin: only VAR funds VAR transactions. A staker-fee
+	// output can be respent by a miner without the owner's key.
 	return slices.DeleteFunc(unspents, func(u *walletjson.ListUnspentResult) bool {
-		return u.CoinType != uint8(cointype.CoinTypeVAR)
+		return u.CoinType != uint8(cointype.CoinTypeVAR) || u.TxType == int(stake.TxTypeSSFee)
 	}), err
 }
 

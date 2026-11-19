@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	dexmon "decred.org/dcrdex/dex/networks/mon"
 	"github.com/decred/base58"
 	dcrsecp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/monetarium/monetarium-node/blockchain/stake"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/dcrec"
 	"github.com/monetarium/monetarium-node/dcrutil"
@@ -208,7 +210,69 @@ func TestFundingIgnoresSKA(t *testing.T) {
 	addSKA(15, "0.123456789012345678", 1) // SKA change after an SKA fee; more decimals than VAR has
 	fixtures := map[string][]walletjson.ListUnspentResult{"round SKA": round, "with fractional SKA1": unspents,
 		"SKA in the trading account": trading}
+	testFundingAvoids(t, fixtures, ska)
+}
 
+// TestStakerFeeNotSelected is item 8: an output of a staker-fee transaction
+// must never fund a DEX transaction, however old. A miner can respend it in a
+// block without the owner's key, as an augmented staker-fee input. The wallet
+// lists it once matured, spendable, with an OP_SSGEN-tagged P2PKH script.
+func TestStakerFeeNotSelected(t *testing.T) {
+	var unspents []walletjson.ListUnspentResult
+	for i, amt := range []string{"4", "5", "6"} {
+		unspents = append(unspents, *tUnspent(uint32(i), amt))
+	}
+	payout, err := stake.ConsolidationAddrToPkScript(tPKHAddr.(*stdaddr.AddressPubKeyHashEcdsaSecp256k1V0).Hash160()[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	avoid := make(map[outPoint]bool)
+	for vout, o := range map[uint32]struct {
+		amt   string
+		confs int64
+	}{20: {"1000", 16}, 21: {"3", 100_000}} { // just matured on simnet, and old
+		u := tUnspent(vout, o.amt)
+		u.TxType, u.Tree, u.Confirmations = int(stake.TxTypeSSFee), wire.TxTreeStake, o.confs
+		u.ScriptPubKey = hex.EncodeToString(payout)
+		unspents = append(unspents, *u)
+		avoid[newOutPoint(tTxHash, vout)] = true
+	}
+	trading := slices.Clone(unspents)
+	for i := range trading {
+		if trading[i].TxType == int(stake.TxTypeSSFee) {
+			trading[i].Account = tTradingAcct // the trading account is read on its own
+		}
+	}
+	testFundingAvoids(t, map[string][]walletjson.ListUnspentResult{"staker fee": unspents,
+		"staker fee in the trading account": trading}, avoid)
+
+	// Only the staker-fee type goes: the owner's vote and revocation outputs still fund an order
+	// that the 1 VAR regular output cannot.
+	for _, txType := range []stake.TxType{stake.TxTypeSSGen, stake.TxTypeSSRtx} {
+		wallet, node, shutdown := tNewWallet()
+		reward := tUnspent(1, "10")
+		reward.TxType, reward.Tree, reward.Confirmations = int(txType), wire.TxTreeStake, 1000
+		reward.ScriptPubKey = hex.EncodeToString(payout)
+		node.unspent = []walletjson.ListUnspentResult{*tUnspent(0, "1"), *reward}
+		node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
+		node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("11")}}
+		_, _, _, err := wallet.FundOrder(&asset.Order{Version: version, Value: 5e8, MaxSwapCount: 5e8 / tLotSize,
+			MaxFeeRate: tDCR.MaxFeeRate, FeeSuggestion: feeSuggestion})
+		shutdown()
+		if err != nil {
+			t.Errorf("tx type %v: FundOrder: %v", txType, err)
+		}
+	}
+}
+
+// testFundingAvoids runs every funding path over each fixture: VAR outputs of
+// 4, 5 and 6 VAR next to outputs that must be avoided. Each amount is above
+// the largest VAR output, so a driver that took an avoided output for an
+// ordinary VAR one would cover it with a large one; FundMultiOrder takes the
+// set that over-funds least, so each fixture also holds a small one. Each path must
+// succeed without returning, locking or spending an avoided outpoint.
+func testFundingAvoids(t *testing.T, fixtures map[string][]walletjson.ListUnspentResult, avoid map[outPoint]bool) {
+	t.Helper()
 	const largestVAR = 6e8
 	order := func(split bool) *asset.Order {
 		const val = largestVAR + 2e8
@@ -300,17 +364,17 @@ func TestFundingIgnoresSKA(t *testing.T) {
 
 				coins, err := tc.run(wallet)
 				if err != nil {
-					t.Fatalf("error: %v", err) // a driver that picks SKA and then fails must not pass
+					t.Fatalf("error: %v", err) // a driver that picks an avoided output and then fails must not pass
 				}
 				for _, c := range coins {
 					h, v, _ := decodeCoinID(c.ID())
-					if ska[newOutPoint(h, v)] {
-						t.Errorf("returned SKA coin %s", c)
+					if avoid[newOutPoint(h, v)] {
+						t.Errorf("returned avoided coin %s", c)
 					}
 				}
 				for _, op := range node.lockedCoins {
-					if ska[newOutPoint(&op.Hash, op.Index)] {
-						t.Errorf("locked SKA outpoint %s", op)
+					if avoid[newOutPoint(&op.Hash, op.Index)] {
+						t.Errorf("locked avoided outpoint %s", op)
 					}
 				}
 				if node.sentRawTx == nil {
@@ -320,8 +384,8 @@ func TestFundingIgnoresSKA(t *testing.T) {
 					return
 				}
 				for _, in := range node.sentRawTx.TxIn {
-					if op := in.PreviousOutPoint; ska[newOutPoint(&op.Hash, op.Index)] {
-						t.Errorf("spent SKA outpoint %s", op)
+					if op := in.PreviousOutPoint; avoid[newOutPoint(&op.Hash, op.Index)] {
+						t.Errorf("spent avoided outpoint %s", op)
 					}
 				}
 			})
@@ -332,9 +396,9 @@ func TestFundingIgnoresSKA(t *testing.T) {
 			defer shutdown()
 			wallet.wallet.(*rpcWallet).accountsV.Store(XCWalletAccounts{PrimaryAccount: tAcctName, UnmixedAccount: "tUnmixedAcct", TradingAccount: tTradingAcct})
 			node.unspent = fx
-			for op := range ska {
+			for op := range avoid {
 				if coins, err := wallet.FundingCoins([]dex.Bytes{toCoinID(&op.txHash, op.vout)}); err == nil {
-					t.Errorf("FundingCoins found SKA coin %s", coins[0])
+					t.Errorf("FundingCoins found avoided coin %s", coins[0])
 				}
 			}
 		})
