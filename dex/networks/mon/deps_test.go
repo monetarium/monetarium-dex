@@ -12,6 +12,7 @@ import (
 	// Each root is linked in, so that a change to it invalidates go test's
 	// cached result; the go list child process is invisible to the cache.
 	_ "decred.org/dcrdex/dex/networks/mon"
+	_ "decred.org/dcrdex/server/asset/mon"
 )
 
 // TestNoDecredTxCode checks that no DCRDEX package in the VAR port's build
@@ -22,10 +23,11 @@ import (
 // The forbidden packages are still in the transitive set, through the importers
 // listed below, so the check is on who imports them.
 func TestNoDecredTxCode(t *testing.T) {
-	// The VAR packages. client/asset/mon and server/asset/mon join as they land,
-	// each also blank-imported above.
+	// The VAR packages. client/asset/mon joins when it lands, also
+	// blank-imported above.
 	roots := []string{
 		"decred.org/dcrdex/dex/networks/mon",
+		"decred.org/dcrdex/server/asset/mon",
 	}
 	forbidden := map[string]bool{
 		"github.com/decred/dcrd/wire":             true,

@@ -167,6 +167,9 @@ func loadMarketConf(net dex.Network, src io.Reader) ([]*dex.MarketInfo, []*Asset
 		if assetConf.MaxFeeRate == 0 {
 			return nil, nil, fmt.Errorf("max fee rate of 0 is invalid for asset %q", assetConf.Symbol)
 		}
+		if err := checkVarMaxFeeRate(assetID, assetConf.MaxFeeRate); err != nil {
+			return nil, nil, err
+		}
 
 		unused[assetID] = assetConf.Symbol
 		assetMap[assetID] = struct{}{}
@@ -662,6 +665,9 @@ func NewDEX(ctx context.Context, cfg *DexConf) (*DEX, error) {
 
 		if assetConf.MaxFeeRate == 0 {
 			return nil, fmt.Errorf("max fee rate of 0 is invalid for asset %q", symbol)
+		}
+		if err := checkVarMaxFeeRate(assetID, assetConf.MaxFeeRate); err != nil {
+			return nil, err
 		}
 
 		if assetConf.NodeRelayID != "" {

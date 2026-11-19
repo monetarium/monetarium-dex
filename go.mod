@@ -59,11 +59,19 @@ require (
 	github.com/ltcsuite/ltcd v0.23.6-0.20240131072528-64dfa402637a
 	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2
 	github.com/ltcsuite/ltcd/ltcutil v1.1.4-0.20240131072528-64dfa402637a
+	github.com/monetarium/monetarium-node/blockchain/stake v1.3.14
+	github.com/monetarium/monetarium-node/blockchain/standalone v1.3.14
 	github.com/monetarium/monetarium-node/chaincfg v1.3.14
 	github.com/monetarium/monetarium-node/chaincfg/chainhash v1.3.14
+	github.com/monetarium/monetarium-node/cointype v1.3.14
 	github.com/monetarium/monetarium-node/dcrec v1.3.14
+	github.com/monetarium/monetarium-node/dcrec/edwards v1.3.14
 	github.com/monetarium/monetarium-node/dcrec/secp256k1 v1.3.14
+	github.com/monetarium/monetarium-node/dcrjson v1.3.14
 	github.com/monetarium/monetarium-node/dcrutil v1.3.14
+	github.com/monetarium/monetarium-node/hdkeychain v1.3.14
+	github.com/monetarium/monetarium-node/rpc/jsonrpc/types v1.3.14
+	github.com/monetarium/monetarium-node/rpcclient v1.3.14
 	github.com/monetarium/monetarium-node/txscript v1.3.14
 	github.com/monetarium/monetarium-node/wire v1.3.14
 	github.com/pkg/browser v0.0.0-20210911075715-681adbf594b8
@@ -164,11 +172,11 @@ require (
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
-	github.com/monetarium/monetarium-node/cointype v1.3.14 // indirect
 	github.com/monetarium/monetarium-node/crypto/blake256 v1.3.14 // indirect
 	github.com/monetarium/monetarium-node/crypto/rand v1.3.14 // indirect
 	github.com/monetarium/monetarium-node/crypto/ripemd160 v1.3.14 // indirect
-	github.com/monetarium/monetarium-node/dcrec/edwards v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/database v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/gcs v1.3.14 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/onsi/ginkgo v1.16.5 // indirect
 	github.com/onsi/gomega v1.27.1 // indirect

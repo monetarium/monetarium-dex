@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -292,6 +293,14 @@ func TestIsDust(t *testing.T) {
 			"unspendable pkScript",
 			wire.TxOut{Value: 5000, PkScript: []byte{0x01}},
 			0, // no relay fee
+			true,
+		},
+		{
+			// An SKA output carries no VAR value, so it is dust to the VAR
+			// asset, although the node relays SKA outputs of 30 atoms or more.
+			"SKA1 output of 1 SKA1",
+			*wire.NewTxOutSKA(big.NewInt(1e18), 1, pkScript),
+			10,
 			true,
 		},
 	}

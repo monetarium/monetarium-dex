@@ -265,11 +265,15 @@ returns atoms/kB as an integer string.
   - Both the server and the client round up (step 5 asserts the same table). A rate rounded
     down could fall below the node's minimum.
   - Any answer under 10 atoms/B returns 10.
-- **Item 3, `TestVarMaxFeeRateBound`.** A VAR asset config with `maxFeeRate` above 1000 atoms/B
-  must be refused at load. At 1000 atoms/B or less, no transaction of any size exceeds the
-  node's ceiling, max(size × 1000, 1 000 000) atoms. The asset backend never sees
-  `maxFeeRate`: `server/dex` parses and checks it. So the bound and its test land in
-  `server/dex`, next to the existing check that `maxFeeRate` is not 0.
+- **Item 3, `TestVarMaxFeeRateBound`.** A VAR asset config with `maxFeeRate` above 600 atoms/B
+  must be refused at load. The node's ceiling is max(size × 1000, 1 000 000) atoms, and a swap
+  can pay more than size × rate: the driver leaves change it would call dust, under 606 × rate,
+  in the fee. So the fee can reach (size + 643) × rate − 1. The tightest size is 1000 bytes,
+  where the ceiling is still the flat 1 000 000, which allows at most 608 atoms/B
+  (1 000 000 / 1643); 600 leaves a little margin. The asset backend is not given `maxFeeRate`
+  at setup (`BackendConfig` has no such field): `server/dex` parses and checks it. So the bound
+  and its test land in `server/dex`, next to both existing checks that `maxFeeRate` is not 0
+  (in `loadMarketConf` and `NewDEX`).
 - **Item 10:** `TestCheckSwapAddressDecred` and `TestValidateXPubDecred`, on mainnet
   parameters. A Decred mainnet address must be refused by `CheckSwapAddress`, and a Decred
   mainnet extended key by `ValidateXPub`. On simnet and testnet the prefixes are the same as
@@ -306,7 +310,7 @@ the transaction unsigned. That stub gets a real signer.
   - `v1.0.6` has no private redeem or refund. They come under this test once an upstream
     merge brings them.
 - **Item 3, `TestFeeRateCeiling`.** No path may build a transaction above 1000 atoms/B:
-  - a swap at the market's `MaxFeeRate`;
+  - a swap at the market's `MaxFeeRate` with the maximum swap fee bump (2.0×);
   - a redeem and a refund with the maximum fee bump (2.0×) over a high network rate;
   - a send;
   - a bond refund.
@@ -390,7 +394,7 @@ runs with an RPC wallet and with a native SPV wallet, unless noted.
 - **Item 3, `TestFeeCeilingNode`.** A transaction of at least 1000 bytes, built with the
   port's helpers rather than the driver, whose clamp would stop it. It is sent to alpha with
   `sendrawtransaction`, high fees not allowed. It must be accepted at 1000 atoms/B and refused
-  at 1001 with the node's high-fee error. This confirms the bound step 4 and step 5 rely on.
+  at 1001 with the node's high-fee error. This confirms the bound step 5 relies on.
   No wallet type applies.
 - **Item 4:**
   - `TestDustChangeNode`: step 5's 6040-atom case, broadcast; it must be accepted.
@@ -424,7 +428,8 @@ runs with an RPC wallet and with a native SPV wallet, unless noted.
 10, `swapConf` 1, the config of the alpha node, a `regXPub` from a `server_fees` account in
 the alpha wallet, and a VAR bond amount. It also gains `var_btc` and `var_ltc` markets with
 VAR as base: 1 VAR lots, which leaves a wide margin over `MinLotSize(10)`. Lock times are the
-build's 1 minute (taker) and 2 minutes (maker).
+build's 1 minute (taker) and 2 minutes (maker). `server/asset/importall` gains the blank import
+of `server/asset/mon`, so that `dcrdex` registers the VAR server asset.
 
 **Trade tests.**
 
