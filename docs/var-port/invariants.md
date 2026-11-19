@@ -74,8 +74,8 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
   [`spv.go:740-744`][dex:client/asset/dcr/spv.go:740-744], checked). The market falls back to
   `MaxFeeRate` (DEX [`server/market/market.go:2315-2316`][dex:server/market/market.go:2315-2316]). The node reports a too-high fee as
   `ErrInsufficientFee` (NODE [`internal/mempool/mempool.go:1894-1897`][node:internal/mempool/mempool.go:1894-1897]).
-- **Exposed by:** a DEX transaction of 1000 bytes or more whose fee rate exceeds 1000 atoms/B,
-  reached through the market's `MaxFeeRate` or the client's redeem fee bump.
+- **Exposed by:** a DEX transaction whose fee exceeds max(size × 1000, 1 000 000) atoms,
+  reached through the market's `MaxFeeRate` or the client's swap and redeem fee bumps.
 
 ### 4. Size, fee and dust arithmetic uses Monetarium's transaction sizes
 
