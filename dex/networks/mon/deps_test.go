@@ -11,6 +11,7 @@ import (
 
 	// Each root is linked in, so that a change to it invalidates go test's
 	// cached result; the go list child process is invisible to the cache.
+	_ "decred.org/dcrdex/client/asset/mon"
 	_ "decred.org/dcrdex/dex/networks/mon"
 	_ "decred.org/dcrdex/server/asset/mon"
 )
@@ -23,9 +24,9 @@ import (
 // The forbidden packages are still in the transitive set, through the importers
 // listed below, so the check is on who imports them.
 func TestNoDecredTxCode(t *testing.T) {
-	// The VAR packages. client/asset/mon joins when it lands, also
-	// blank-imported above.
+	// The VAR packages, also blank-imported above.
 	roots := []string{
+		"decred.org/dcrdex/client/asset/mon",
 		"decred.org/dcrdex/dex/networks/mon",
 		"decred.org/dcrdex/server/asset/mon",
 	}
@@ -42,7 +43,21 @@ func TestNoDecredTxCode(t *testing.T) {
 	}
 	// Non-DCRDEX importers seen so far. A new one fails the test, so that it is
 	// read before it is added here.
-	knownOther := map[string]bool{}
+	knownOther := map[string]bool{
+		// Decred's own packages, reached from the client driver through
+		// client/asset/btc (dcrd's rpcclient), and stdaddr also through
+		// monetarium-wallet's VSP adapter, which takes Decred's stdaddr from
+		// the vspd client and decodes the address again with Monetarium's
+		// params. None builds a VAR tx.
+		"github.com/decred/dcrd/blockchain/stake/v5": true,
+		"github.com/decred/dcrd/chaincfg/v3":         true,
+		"github.com/decred/dcrd/dcrutil/v4":          true,
+		"github.com/decred/dcrd/gcs/v4":              true,
+		"github.com/decred/dcrd/gcs/v4/blockcf2":     true,
+		"github.com/decred/dcrd/rpcclient/v8":        true,
+		"github.com/decred/dcrd/txscript/v4":         true,
+		"github.com/decred/dcrd/txscript/v4/stdaddr": true,
+	}
 
 	args := append([]string{"list", "-deps", "-f", "{{.ImportPath}}{{range .Imports}} {{.}}{{end}}"}, roots...)
 	out, err := exec.Command("go", args...).Output()

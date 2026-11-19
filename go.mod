@@ -59,11 +59,13 @@ require (
 	github.com/ltcsuite/ltcd v0.23.6-0.20240131072528-64dfa402637a
 	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2
 	github.com/ltcsuite/ltcd/ltcutil v1.1.4-0.20240131072528-64dfa402637a
+	github.com/monetarium/monetarium-node/addrmgr v1.3.14
 	github.com/monetarium/monetarium-node/blockchain/stake v1.3.14
 	github.com/monetarium/monetarium-node/blockchain/standalone v1.3.14
 	github.com/monetarium/monetarium-node/chaincfg v1.3.14
 	github.com/monetarium/monetarium-node/chaincfg/chainhash v1.3.14
 	github.com/monetarium/monetarium-node/cointype v1.3.14
+	github.com/monetarium/monetarium-node/connmgr v1.3.14
 	github.com/monetarium/monetarium-node/dcrec v1.3.14
 	github.com/monetarium/monetarium-node/dcrec/edwards v1.3.14
 	github.com/monetarium/monetarium-node/dcrec/secp256k1 v1.3.14
@@ -88,7 +90,11 @@ require (
 	lukechampine.com/blake3 v1.3.0
 )
 
-require google.golang.org/protobuf v1.36.10 // indirect
+require (
+	github.com/monetarium/monetarium-node/container/lru v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/mixing v1.3.14 // indirect
+	google.golang.org/protobuf v1.36.10 // indirect
+)
 
 require (
 	decred.org/cspp/v2 v2.4.0 // indirect
@@ -176,7 +182,8 @@ require (
 	github.com/monetarium/monetarium-node/crypto/rand v1.3.14 // indirect
 	github.com/monetarium/monetarium-node/crypto/ripemd160 v1.3.14 // indirect
 	github.com/monetarium/monetarium-node/database v1.3.14 // indirect
-	github.com/monetarium/monetarium-node/gcs v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/gcs v1.3.14
+	github.com/monetarium/monetarium-wallet v1.3.15-0.20261115125850-42aa5102b0a2
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/onsi/ginkgo v1.16.5 // indirect
 	github.com/onsi/gomega v1.27.1 // indirect
