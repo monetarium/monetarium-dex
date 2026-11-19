@@ -23,6 +23,45 @@ import (
 	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
 )
 
+// TestFeeRateUnits is item 7, for an RPC wallet in RPC sync mode:
+// estimatesmartfee answers in atoms/kB as an integer string. FeeRate rounds up
+// to atoms/B and never returns less than the node's 10 atoms/B minimum. An
+// answer in another shape, such as Decred's coins/kB, is refused, not misread.
+func TestFeeRateUnits(t *testing.T) {
+	wallet, node, shutdown := tNewWallet()
+	defer shutdown()
+
+	for _, tt := range []struct {
+		smartFee string
+		want     uint64
+	}{
+		{"10000", 10},
+		{"10001", 11},
+		{"15500", 16},
+		{"1000000", 1000},
+		{"9999", 10},
+		{"1000", 10},
+		{"0", 10},
+		{"18446744073709551615", 18446744073709552}, // rounding up must not wrap
+	} {
+		node.smartFee = tt.smartFee
+		if got := wallet.FeeRate(); got != tt.want {
+			t.Errorf("estimatesmartfee %q: FeeRate = %d atoms/B, want %d", tt.smartFee, got, tt.want)
+		}
+	}
+
+	wallet.config().apiFeeFallback = false // no oracle: a refused answer leaves no rate
+	for _, bad := range []string{"0.0001", "x", "-1"} {
+		node.smartFee = bad
+		if rate, err := wallet.wallet.(*rpcWallet).EstimateSmartFeeRate(tCtx, 2, chainjson.EstimateSmartFeeConservative); err == nil {
+			t.Errorf("estimatesmartfee %q: rate %v, want an error", bad, rate)
+		}
+		if got := wallet.FeeRate(); got != 0 {
+			t.Errorf("estimatesmartfee %q: FeeRate = %d atoms/B, want 0", bad, got)
+		}
+	}
+}
+
 // TestDecredAddressRejected is item 10: on mainnet, where Monetarium's address
 // prefixes differ from Decred's, a Decred address must be refused. Each case
 // has a control: the same key hash as a Monetarium mainnet address passes.

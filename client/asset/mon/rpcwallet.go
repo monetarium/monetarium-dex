@@ -575,10 +575,10 @@ func (w *rpcWallet) LockedOutputs(ctx context.Context, acctName string) ([]chain
 }
 
 // EstimateSmartFeeRate returns a smart feerate estimate using the
-// estimatesmartfee rpc.
+// estimatesmartfee rpc, in atoms/kB.
 // Part of the Wallet interface.
-func (w *rpcWallet) EstimateSmartFeeRate(ctx context.Context, confTarget int64, mode chainjson.EstimateSmartFeeMode) (float64, error) {
-	// estimatesmartfee 1 returns extremely high rates (e.g. 0.00817644).
+func (w *rpcWallet) EstimateSmartFeeRate(ctx context.Context, confTarget int64, mode chainjson.EstimateSmartFeeMode) (uint64, error) {
+	// estimatesmartfee 1 doubles the rate (the node's next-block multiplier).
 	if confTarget < 2 {
 		confTarget = 2
 	}
@@ -586,7 +586,12 @@ func (w *rpcWallet) EstimateSmartFeeRate(ctx context.Context, confTarget int64, 
 	if err != nil {
 		return 0, translateRPCCancelErr(err)
 	}
-	return strconv.ParseFloat(estimateFeeResult.FeeRate, 64)
+	// The node answers in atoms/kB, as an integer string.
+	atomsPerKB, err := strconv.ParseUint(estimateFeeResult.FeeRate, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("estimatesmartfee feerate %q: %w", estimateFeeResult.FeeRate, err)
+	}
+	return atomsPerKB, nil
 }
 
 // Unspents fetches unspent outputs for the specified account using rpc

@@ -349,7 +349,8 @@ the transaction unsigned. That stub gets a real signer.
 
   This covers the coins passed to `lockunspent` and the inputs of every built transaction.
   `FundingCoins`, asked for an SKA coin, must not find it.
-- **Item 7, `TestFeeRateUnits`.** The same table as step 4, through `FeeRate`. This covers an
+- **Item 7, `TestFeeRateUnits`.** The same table as step 4, through `FeeRate`; an answer that
+  is not an unsigned integer, such as Decred's coins/kB, is an error. This covers an
   RPC wallet in RPC sync mode; in SPV mode (the native wallet, or an RPC wallet whose
   dcrwallet syncs by SPV) the driver never calls `estimatesmartfee`, and its rates are
   `TestFeeOracle`'s (step 6).

@@ -1295,15 +1295,12 @@ func (dcr *ExchangeWallet) feeRate(confTarget uint64) (uint64, error) {
 		return 0, errors.New("not connected")
 	}
 	if feeEstimator, is := dcr.wallet.(FeeRateEstimator); is && !dcr.wallet.SpvMode() {
-		dcrPerKB, err := feeEstimator.EstimateSmartFeeRate(dcr.ctx, int64(confTarget), chainjson.EstimateSmartFeeConservative)
-		if err == nil && dcrPerKB > 0 {
-			return dcrPerKBToAtomsPerByte(dcrPerKB)
+		atomsPerKB, err := feeEstimator.EstimateSmartFeeRate(dcr.ctx, int64(confTarget), chainjson.EstimateSmartFeeConservative)
+		if err == nil {
+			// Round up: a rate rounded down could fall below the node's minimum.
+			return max(atomsPerKB/1000+min(atomsPerKB%1000, 1), dexmon.MinRelayFeeRate), nil
 		}
-		if err != nil {
-			dcr.log.Warnf("Failed to get local fee rate estimate: %v", err)
-		} else { // dcrPerKB == 0
-			dcr.log.Warnf("Local fee estimate is zero.")
-		}
+		dcr.log.Warnf("Failed to get local fee rate estimate: %v", err)
 	}
 
 	cfg := dcr.config()
