@@ -170,6 +170,10 @@ func minHTLCValue(maxFeeRate, redeemTxSize uint64) uint64 {
 	return minInitTxValue + redeemFees
 }
 
+// MinRelayFeeRate is the node's default minimum relay fee, in atoms/B. The
+// node refuses a VAR transaction that pays less.
+const MinRelayFeeRate = 10
+
 // MinBondSize is the minimum bond size that avoids dust for a given max network
 // fee rate.
 func MinBondSize(maxFeeRate uint64) uint64 {
