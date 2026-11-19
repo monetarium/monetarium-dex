@@ -15,7 +15,9 @@ import (
 // refuses a VAR transaction whose fee exceeds max(size × 1000, 1 000 000)
 // atoms unless high fees are allowed, and the DEX does not allow them. With the
 // dust change a swap leaves in its fee, a VAR maxFeeRate above 600 atoms/B can
-// cross that ceiling, so it must be refused when the config loads.
+// cross that ceiling, so it must be refused when the config loads. The test
+// also holds a floor that is no invariants.md item: a VAR maxFeeRate below the
+// node's 10 atoms/B minimum relay fee is refused too.
 func TestVarMaxFeeRateBound(t *testing.T) {
 	conf := func(varRate, btcRate uint64) string {
 		return fmt.Sprintf(`{
@@ -37,5 +39,14 @@ func TestVarMaxFeeRateBound(t *testing.T) {
 	}
 	if err := load(601, 100); err == nil {
 		t.Fatal("VAR maxFeeRate of 601 atoms/B accepted")
+	}
+
+	// The market caps swap fee rates at maxFeeRate, so below the node's
+	// minimum relay fee a swap at the default fee bump is refused at broadcast.
+	if err := load(10, 1); err != nil {
+		t.Fatalf("VAR at 10 atoms/B (BTC at 1) refused: %v", err)
+	}
+	if err := load(9, 100); err == nil {
+		t.Fatal("VAR maxFeeRate of 9 atoms/B accepted")
 	}
 }

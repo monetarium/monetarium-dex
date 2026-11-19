@@ -116,8 +116,6 @@ const (
 	assetName                = "var"
 	immatureTransactionError = dex.ErrorKind("immature output")
 	BondVersion              = 0
-	// minFeeRate is the node's default minimum relay fee, in atoms/B.
-	minFeeRate = 10
 )
 
 // dcrNode represents a blockchain information fetcher. In practice, it is
@@ -437,8 +435,8 @@ func (dcr *Backend) FeeRate(ctx context.Context) (uint64, error) {
 	}
 	// Round up: a rate rounded down could fall below the node's minimum.
 	atomsPerB := (atomsPerKB + 999) / 1000
-	if atomsPerB < minFeeRate {
-		atomsPerB = minFeeRate
+	if atomsPerB < dexmon.MinRelayFeeRate {
+		atomsPerB = dexmon.MinRelayFeeRate
 	}
 	return atomsPerB, nil
 }
