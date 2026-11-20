@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -736,5 +737,253 @@ func TestDustChange(t *testing.T) {
 		if out.Value < 6060 {
 			t.Errorf("change output %d of %d atoms, under the node's dust threshold of 6060", i+1, out.Value)
 		}
+	}
+}
+
+// nodeMaxFee is the node's fee ceiling for a VAR transaction of size bytes
+// when high fees are not allowed: max(size × 1000, 1 000 000) atoms.
+func nodeMaxFee(size int) int64 { return max(int64(size)*1000, 1_000_000) }
+
+// TestFeeRateCeiling is item 3: no transaction the driver sends pays more than
+// the node's ceiling, whatever rate it is asked for. Swaps run at a market
+// maxFeeRate of 600 with the 2.0 swap fee bump, over leftovers that sweep the
+// range a change output would call dust. Redeem, refund and bond refund build
+// no change, so they keep all the room under the ceiling to outbid other
+// transactions: asked for a high rate, each pays the flat 1 000 000.
+func TestFeeRateCeiling(t *testing.T) {
+	const highRate = 10_000 // atoms/B
+	wallet, node, shutdown := tNewWallet()
+	defer shutdown()
+	wallet.config().feeRateLimit = 1e6 // a user may raise it; the node's ceiling stays
+	node.smartFee = "10000000"         // highRate, in atoms/kB
+	node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
+	node.signFunc = func(tx *wire.MsgTx) (*wire.MsgTx, bool, error) { return signFunc(tx, dexmon.P2PKHSigScriptSize) }
+	priv := append(make([]byte, 31), 1)
+	addr, err := stdaddr.NewAddressPubKeyHashEcdsaSecp256k1V0(stdaddr.Hash160(secp256k1.PrivKeyFromBytes(priv).PubKey().SerializeCompressed()), tChainParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.privWIF, err = dcrutil.NewWIF(priv, tChainParams.PrivateKeyID, dcrec.STEcdsaSecp256k1); err != nil {
+		t.Fatal(err)
+	}
+	prevVal := make(map[outPoint]int64) // what each input spends, from the fixtures
+	// checkSent checks the fee of every transaction sent since the last call
+	// and returns the last one's fee and size.
+	checkSent := func(kind string) (fee int64, size int) {
+		t.Helper()
+		if len(node.sentRawTxs) == 0 {
+			t.Fatalf("%s: nothing sent", kind)
+		}
+		for _, tx := range node.sentRawTxs {
+			fee = 0
+			for _, in := range tx.TxIn {
+				v, ok := prevVal[newOutPoint(&in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)]
+				if !ok {
+					t.Fatalf("%s spends unknown outpoint %s", kind, in.PreviousOutPoint)
+				}
+				fee += v
+			}
+			for _, out := range tx.TxOut {
+				fee -= out.Value
+			}
+			if size = tx.SerializeSize(); fee > nodeMaxFee(size) {
+				t.Errorf("%s: fee %d atoms for %d bytes, above the node's ceiling %d", kind, fee, size, nodeMaxFee(size))
+			}
+		}
+		node.sentRawTxs = nil
+		return fee, size
+	}
+	// At highRate each no-change transaction asks for more than the flat
+	// 1 000 000, so it must pay exactly that: the most the node takes.
+	outbids := func(kind string) {
+		t.Helper()
+		if fee, size := checkSent(kind); fee != 1_000_000 {
+			t.Errorf("%s: fee %d atoms for %d bytes, want the node's flat ceiling 1000000", kind, fee, size)
+		}
+	}
+
+	// Swaps of 5 and 6 inputs, about 900 and 1100 bytes: the first under the
+	// flat 1 000 000, the second above 1000 bytes. The leftover after the
+	// contract sweeps past what a change output at 1200 atoms/B would call dust.
+	const contractVal = 1e8
+	for _, n := range []uint32{5, 6} {
+		var swapped int
+		for left := int64(0); left < 2_000_000; left += 1999 {
+			var coins asset.Coins
+			for i := range n {
+				v := int64(1e4)
+				if i == 0 {
+					v = contractVal + left - int64(n-1)*1e4
+				}
+				coins = append(coins, newOutput(tTxHash, 100+i, uint64(v), wire.TxTreeRegular))
+				prevVal[newOutPoint(tTxHash, 100+i)] = v
+			}
+			_, _, _, err := wallet.Swap(&asset.Swaps{
+				Inputs:    coins,
+				Contracts: []*asset.Contract{{Address: tPKHAddr.String(), Value: contractVal, SecretHash: make([]byte, 32), LockTime: 1_800_000_000}},
+				FeeRate:   600,
+				Options:   map[string]string{swapFeeBumpKey: "2.0"},
+			})
+			if err != nil {
+				if !strings.Contains(err.Error(), "not enough funds to cover minimum fee") {
+					t.Fatalf("%d-input swap, %d atoms left: %v", n, left, err)
+				}
+				node.sentRawTxs = nil
+				continue // too little left for the fee
+			}
+			swapped++
+			if checkSent(fmt.Sprintf("%d-input swap, %d atoms left", n, left)); t.Failed() {
+				t.FailNow()
+			}
+		}
+		if swapped == 0 {
+			t.Fatalf("no %d-input swap was sent", n)
+		}
+	}
+
+	// Redeem at the 2.0 redeem fee bump over the node's highRate estimate.
+	secret := sha256.Sum256([]byte("TestFeeRateCeiling"))
+	secretHash := sha256.Sum256(secret[:])
+	contract, err := dexmon.MakeContract(addr.String(), addr.String(), secretHash[:], 1_800_000_000, tChainParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coin := newOutput(tTxHash, 0, contractVal, wire.TxTreeRegular)
+	prevVal[newOutPoint(tTxHash, 0)] = contractVal
+	if _, _, _, err = wallet.Redeem(&asset.RedeemForm{Redemptions: []*asset.Redemption{{
+		Spends: &asset.AuditInfo{Coin: coin, Contract: contract, Recipient: addr.String(), Expiration: time.Unix(1_800_000_000, 0)},
+		Secret: secret[:],
+	}}, Options: map[string]string{redeemFeeBumpFee: "2.0"}}); err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+	outbids("redeem")
+	// A small redeem the capped fee leaves well above the node's dust: its dust
+	// check must run at the rate the fee pays, not the rate asked.
+	const smallVal = 6e6
+	smallCoin := newOutput(tTxHash, 3, smallVal, wire.TxTreeRegular)
+	prevVal[newOutPoint(tTxHash, 3)] = smallVal
+	if _, _, _, err = wallet.Redeem(&asset.RedeemForm{Redemptions: []*asset.Redemption{{
+		Spends: &asset.AuditInfo{Coin: smallCoin, Contract: contract, Recipient: addr.String(), Expiration: time.Unix(1_800_000_000, 0)},
+		Secret: secret[:],
+	}}, Options: map[string]string{redeemFeeBumpFee: "2.0"}}); err != nil {
+		t.Fatalf("Redeem of %d atoms: %v", int64(smallVal), err)
+	}
+	outbids("small redeem")
+	// A batch of six redeems, above 1000 bytes, where the node allows more
+	// than the flat 1 000 000: it must pay more, at 600 atoms/B.
+	var batch []*asset.Redemption
+	for vout := uint32(10); vout < 16; vout++ {
+		prevVal[newOutPoint(tTxHash, vout)] = contractVal
+		batch = append(batch, &asset.Redemption{Secret: secret[:], Spends: &asset.AuditInfo{
+			Coin: newOutput(tTxHash, vout, contractVal, wire.TxTreeRegular), Contract: contract,
+			Recipient: addr.String(), Expiration: time.Unix(1_800_000_000, 0)}})
+	}
+	if _, _, _, err = wallet.Redeem(&asset.RedeemForm{Redemptions: batch,
+		Options: map[string]string{redeemFeeBumpFee: "2.0"}}); err != nil {
+		t.Fatalf("batch Redeem: %v", err)
+	}
+	if fee, size := checkSent("batch redeem"); size <= 1000 || fee < 600*int64(size) {
+		t.Errorf("batch redeem: fee %d atoms for %d bytes, want at least 600 atoms/B", fee, size)
+	}
+
+	// Refund at highRate from its caller.
+	p2sh, _ := stdaddr.NewAddressScriptHashV0(contract, tChainParams)
+	_, contractScript := p2sh.PaymentScript()
+	tipHash, _ := node.getBestBlock()
+	node.txOutRes[newOutPoint(tTxHash, 0)] = &chainjson.GetTxOutResult{Confirmations: 1,
+		Value: dcrutil.Amount(contractVal).ToCoin(), BestBlock: tipHash.String(),
+		ScriptPubKey: chainjson.ScriptPubKeyResult{Hex: hex.EncodeToString(contractScript)}}
+	if _, err = wallet.Refund(coin.ID(), contract, highRate); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	outbids("refund")
+
+	// Send at highRate.
+	node.unspent = []walletjson.ListUnspentResult{*tUnspent(1, "5")}
+	prevVal[newOutPoint(tTxHash, 1)] = 5e8
+	if _, err = wallet.Send(tPKHAddr.String(), 1e8, highRate); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	checkSent("send")
+	node.unspent = []walletjson.ListUnspentResult{*tUnspent(5, "5")}
+	prevVal[newOutPoint(tTxHash, 5)] = 5e8
+	if _, err = wallet.Withdraw(tPKHAddr.String(), 1e8, highRate); err != nil {
+		t.Fatalf("Withdraw: %v", err)
+	}
+	checkSent("withdraw")
+
+	// Bond refund at the node's highRate estimate.
+	bondKey := dcrsecp256k1.PrivKeyFromBytes(append(make([]byte, 31), 9))
+	node.unspent = []walletjson.ListUnspentResult{*tUnspent(2, "5")}
+	prevVal[newOutPoint(tTxHash, 2)] = 5e8
+	bond, _, err := wallet.MakeBondTx(0, 1e8, highRate, time.Now().Add(12*time.Hour), bondKey, make([]byte, 32))
+	if err != nil {
+		t.Fatalf("MakeBondTx: %v", err)
+	}
+	bondTx, err := msgTxFromBytes(bond.SignedTx) // built, not sent
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.sentRawTxs = []*wire.MsgTx{bondTx}
+	checkSent("bond")
+	bondHash, bondVout, _ := decodeCoinID(bond.CoinID)
+	prevVal[newOutPoint(bondHash, bondVout)] = 1e8
+	if _, err = wallet.RefundBond(tCtx, 0, bond.CoinID, bond.Data, 1e8, bondKey); err != nil {
+		t.Fatalf("RefundBond: %v", err)
+	}
+	outbids("bond refund")
+
+	// Small contracts and bonds at the same rates: 0.06 VAR goes through at
+	// the flat cap, its dust checked at the rate the capped fee pays, and
+	// 0.02 VAR, which leaves 0.01 VAR after it, is refused as dust.
+	refundOf := func(vout uint32, val int64) error {
+		node.txOutRes[newOutPoint(tTxHash, vout)] = &chainjson.GetTxOutResult{Confirmations: 1,
+			Value: dcrutil.Amount(val).ToCoin(), BestBlock: tipHash.String(),
+			ScriptPubKey: chainjson.ScriptPubKeyResult{Hex: hex.EncodeToString(contractScript)}}
+		prevVal[newOutPoint(tTxHash, vout)] = val
+		_, err := wallet.Refund(toCoinID(tTxHash, vout), contract, highRate)
+		return err
+	}
+	bondRefundOf := func(vout uint32, val int64) error {
+		prevVal[newOutPoint(tTxHash, vout)] = val
+		_, err := wallet.RefundBond(tCtx, 0, toCoinID(tTxHash, vout), bond.Data, uint64(val), bondKey)
+		return err
+	}
+	if err := refundOf(21, 6e6); err != nil {
+		t.Fatalf("Refund of 6000000 atoms: %v", err)
+	}
+	outbids("small refund")
+	if err := bondRefundOf(22, 6e6); err != nil {
+		t.Fatalf("RefundBond of 6000000 atoms: %v", err)
+	}
+	outbids("small bond refund")
+	for kind, refuse := range map[string]func() error{
+		"redeem": func() error {
+			prevVal[newOutPoint(tTxHash, 23)] = 2e6
+			_, _, _, err := wallet.Redeem(&asset.RedeemForm{Redemptions: []*asset.Redemption{{Secret: secret[:],
+				Spends: &asset.AuditInfo{Coin: newOutput(tTxHash, 23, 2e6, wire.TxTreeRegular), Contract: contract,
+					Recipient: addr.String(), Expiration: time.Unix(1_800_000_000, 0)}}}})
+			return err
+		},
+		"refund":      func() error { return refundOf(24, 2e6) },
+		"bond refund": func() error { return bondRefundOf(25, 2e6) },
+	} {
+		if err := refuse(); err == nil || !strings.Contains(err.Error(), "dust") {
+			t.Errorf("%s of 2000000 atoms: error %v, want a dust refusal", kind, err)
+		}
+		node.sentRawTxs = nil
+	}
+
+	// A market rate above the swap cap is refused at funding, before a match
+	// the clamped swap would underpay.
+	node.unspent = []walletjson.ListUnspentResult{*tUnspent(4, "5")}
+	node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("5")}}
+	if _, _, _, err = wallet.FundOrder(&asset.Order{Version: version, Value: 1e8, MaxSwapCount: 1e8 / tLotSize,
+		MaxFeeRate: dexmon.MaxFeeRate + 1, FeeSuggestion: feeSuggestion}); err == nil {
+		t.Error("FundOrder at a MaxFeeRate above 600: no error")
+	}
+	if _, _, _, err = wallet.FundMultiOrder(&asset.MultiOrder{Values: []*asset.MultiOrderValue{{Value: 1e8, MaxSwapCount: 1e8 / tLotSize}},
+		MaxFeeRate: dexmon.MaxFeeRate + 1, FeeSuggestion: feeSuggestion}, 0); err == nil {
+		t.Error("FundMultiOrder at a MaxFeeRate above 600: no error")
 	}
 }

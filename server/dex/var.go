@@ -18,7 +18,9 @@ import (
 // bytes, where the ceiling is still the flat 1 000 000, which allows at most
 // 608 (1 000 000 / 1643); 600 leaves a little margin. The node sets the
 // ceiling at 100 times its --minrelaytxfee, so this holds at the default of 10
-// atoms/B.
+// atoms/B. It copies dex/networks/mon MaxFeeRate, the client's cap on the
+// rate of a transaction that may get change, for the reason given at
+// varMinFeeRate.
 const varMaxFeeRate = 600
 
 // varMinFeeRate is the lowest maxFeeRate, in atoms/B, a VAR asset may set: the

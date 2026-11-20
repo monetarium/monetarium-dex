@@ -318,16 +318,25 @@ gets a real signer.
   - `v1.0.6` has no private redeem or refund. They come under this test once an upstream
     merge brings them.
 - **Item 3, `TestFeeRateCeiling`.** No path may build a transaction whose fee exceeds the
-  node's ceiling, max(size × 1000, 1 000 000) atoms at its Monetarium serialized size:
-  - a swap at the market's `MaxFeeRate` with the maximum swap fee bump (2.0×);
-  - a redeem with the maximum fee bump (2.0×) over a high network rate;
-  - a refund at a high rate from its caller;
-  - a send;
-  - a bond refund.
+  node's ceiling, max(size × 1000, 1 000 000) atoms at its Monetarium serialized size. The
+  wallet's fee rate limit is raised, as a user may, so the high rates reach the driver:
+  - swaps at the market's highest `MaxFeeRate`, 600, with the maximum swap fee bump (2.0×),
+    of 5 and 6 inputs (about 900 and 1100 bytes), the leftover after the contract swept past
+    what a change output would call dust;
+  - a redeem with the maximum fee bump (2.0×) over a network rate of 10 000 atoms/B;
+  - a refund at 10 000 atoms/B from its caller;
+  - a send at 10 000 atoms/B;
+  - a bond refund at the network rate.
 
   The test checks the fee of every transaction passed to `sendrawtransaction` against that
-  ceiling. A clamp in the driver is the guard for both DEX wallet types, because the native SPV
-  wallet ignores the high-fee flag.
+  ceiling, from the values its fixtures give the inputs. A clamp in the driver is the guard
+  for both DEX wallet types, because the native SPV wallet ignores the high-fee flag. It
+  has two parts. A transaction with no change output (redeem, refund, bond refund) pays at
+  most the flat 1 000 000, under the ceiling at any size, so the redeem, refund and bond
+  refund above must each pay exactly that: they keep their room to outbid other transactions
+  under SKA load. A transaction that may get change runs at most 600 atoms/B, because change
+  it calls dust stays in the fee; `TestFeeCaps` in `dex/networks/mon` checks that bound at
+  every size.
 - **Item 4, `TestRedeemRefundAtMinRelay`.** A redeem and a refund at 10 atoms/B, each signed
   with a key ground for that transaction so its signature has a 33-byte R and a 32-byte S.
   Signatures are deterministic (RFC 6979), so the test grinds over a fixed key sequence and
