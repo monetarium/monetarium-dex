@@ -47,6 +47,7 @@ go build -tags systray -o /dev/null ./client/cmd/bisonw
 
 go test -c -o /dev/null -tags live ./client/webserver
 go test -c -o /dev/null -tags harness ./client/asset/dcr
+go test -c -o /dev/null -tags harness ./client/asset/mon
 go test -c -o /dev/null -tags electrumlive ./client/asset/btc
 go test -c -o /dev/null -tags harness ./client/asset/btc/livetest
 go test -c -o /dev/null -tags harness ./client/asset/ltc
@@ -61,6 +62,7 @@ go test -c -o /dev/null -tags rpclive ./client/asset/polygon
 go test -c -o /dev/null -tags live ./dex/testing/firo/test
 go test -c -o /dev/null -tags live ./server/noderelay
 go test -c -o /dev/null -tags dcrlive ./server/asset/dcr
+go test -c -o /dev/null -tags dcrlive ./server/asset/mon
 go test -c -o /dev/null -tags btclive ./server/asset/btc
 go test -c -o /dev/null -tags ltclive ./server/asset/ltc
 go test -c -o /dev/null -tags bchlive ./server/asset/bch
