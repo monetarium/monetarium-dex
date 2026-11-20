@@ -16,6 +16,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -81,6 +82,22 @@ func (c *tVersionConnector) Version(context.Context) (map[string]chainjson.Versi
 func (c *tVersionConnector) Disconnected() bool { return false }
 func (c *tVersionConnector) Shutdown()          {}
 func (c *tVersionConnector) WaitForShutdown()   {}
+
+// TestSimnetSPVPeer: the native SPV wallet's simnet peer is the VAR harness's
+// alpha node, not the DCR harness's.
+func TestSimnetSPVPeer(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "dex", "testing", "var", "harness.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^ALPHA_NODE_PORT="(\d+)"$`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("no ALPHA_NODE_PORT in harness.sh")
+	}
+	if want := "localhost:" + string(m[1]); simnetSPVPeer != want {
+		t.Fatalf("simnetSPVPeer = %s, want %s", simnetSPVPeer, want)
+	}
+}
 
 // TestCheckRPCConnectionVersions checks the version gate against the keys
 // monetarium-wallet's version RPC returns: its own API as "monwjsonrpcapi"
