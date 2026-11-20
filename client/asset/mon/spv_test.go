@@ -484,7 +484,9 @@ func tNewSpvWallet() (*spvWallet, *tDcrWallet) {
 }
 
 // tNewNativeWallet is the SPV test seam: a NativeWallet over the tDcrWallet
-// mock, connected, with the mock's addresses set to tPKHAddr.
+// mock, connected, with the mock's addresses set to tPKHAddr, its primary
+// account tAcctName (tUnspent's) owning every address asked about, and 15 VAR
+// spendable.
 func tNewNativeWallet() (*NativeWallet, *tDcrWallet, func()) {
 	ew, err := unconnectedWallet(&asset.WalletConfig{Emit: asset.NewWalletEmitter(make(chan asset.WalletNotification, 128), BipID, tLogger),
 		PeersChange: func(uint32, error) {}}, &walletConfig{}, tChainParams, tLogger, dex.Simnet)
@@ -493,8 +495,10 @@ func tNewNativeWallet() (*NativeWallet, *tDcrWallet, func()) {
 	}
 	spvw, dcrw := tNewSpvWallet()
 	spvw.chainParams = tChainParams
-	spvw.setAccounts(false)
+	spvw.accts.Store(XCWalletAccounts{PrimaryAccount: tAcctName})
 	dcrw.extAddr, dcrw.intAddr = tPKHAddr, tPKHAddr
+	dcrw.knownAddr = &tKnownAddress{Address: tPKHAddr, acctName: tAcctName}
+	dcrw.acctBal = wallet.Balances{Spendable: 15e8, Total: 15e8}
 	ew.wallet = spvw
 	ew.connected.Store(true)
 	ctx, shutdown := context.WithCancel(tCtx)
