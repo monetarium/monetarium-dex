@@ -125,8 +125,7 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
     [`dcr.go:3097`][dex:client/asset/dcr/dcr.go:3097], checked), and the only size cap is the
     node's 100 000-byte standard size at broadcast (NODE
     [`internal/mempool/policy.go:361-363`][node:internal/mempool/policy.go:361-363]);
-    `v1.0.6` has no size check of its own. Whether coin selection ever picks enough inputs
-    (about 225) is not checked.
+    `v1.0.6` has no size check of its own.
 - How long VAR lock times should be is decided after this test.
 - **Exposed by:** a simnet SKA1 mempool kept above 337 500 bytes per block plus VAR traffic,
   while the `success`, `nomakerredeem` and `notakerswap` trade tests run with short lock times

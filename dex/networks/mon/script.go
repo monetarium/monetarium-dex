@@ -174,6 +174,39 @@ func minHTLCValue(maxFeeRate, redeemTxSize uint64) uint64 {
 // node refuses a VAR transaction that pays less.
 const MinRelayFeeRate = 10
 
+// The node refuses a VAR transaction whose fee is above max(size × 1000,
+// 1 000 000) atoms unless high fees are allowed, and the DEX never allows
+// them. Two caps keep the client under it:
+//
+// MaxFee is the flat part of the cap on the fee of a transaction with no
+// change output (redeem, refund, bond refund): MaxNoChangeFee. A lone redeem
+// or refund keeps about 3000 atoms/B under it to outbid other transactions
+// with.
+//
+// MaxFeeRate caps the rate, in atoms/B, of a transaction that may get change.
+// Change the client calls dust (under 606 × rate for a 37-byte output) is left
+// in the fee, so the fee can reach (size + 643) × rate − 1. At 1000 bytes the
+// ceiling is still the flat 1 000 000, which allows at most 608
+// (1 000 000 / 1643). The server caps a VAR market's maxFeeRate at the same
+// 600, so a swap never pays under the market's rate.
+const (
+	MaxFee     = 1_000_000
+	MaxFeeRate = 600
+)
+
+// MaxNoChangeFee is the most a transaction with no change output pays at an
+// estimated size of size bytes: the flat MaxFee, or MaxFeeRate per byte for
+// a batch above 1666 bytes. Both stay under the node's ceiling at the real
+// size, which the estimate overstates by a byte or two per signature.
+func MaxNoChangeFee(size uint64) uint64 {
+	return max(MaxFee, size*MaxFeeRate)
+}
+
+// MaxTxSize is the largest VAR transaction, in bytes, the client funds: VAR's
+// share of a default 375 000-byte block under SKA load, 10% plus a 10% share
+// of unused space. A larger one never confirms while SKA fills the blocks.
+const MaxTxSize = 37_500
+
 // MinBondSize is the minimum bond size that avoids dust for a given max network
 // fee rate.
 func MinBondSize(maxFeeRate uint64) uint64 {

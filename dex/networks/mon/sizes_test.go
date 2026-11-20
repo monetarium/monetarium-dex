@@ -209,3 +209,44 @@ func TestReservePerLot(t *testing.T) {
 		}
 	}
 }
+
+// TestFeeCaps checks MaxFee and MaxFeeRate against the node's fee ceiling,
+// max(size × 1000, 1 000 000) atoms, at every standard size. A transaction
+// that may get change pays at most size × rate, plus the change it leaves in
+// the fee as dust: the largest value IsDustVal calls dust, together with the
+// fee the 37-byte change output would have cost.
+func TestFeeCaps(t *testing.T) {
+	ceiling := func(size uint64) uint64 { return max(size*1000, 1_000_000) }
+	// server/dex varMaxFeeRate copies MaxFeeRate; the two must stay equal.
+	if MaxFeeRate != 600 {
+		t.Fatalf("MaxFeeRate = %d, want 600, server/dex varMaxFeeRate", MaxFeeRate)
+	}
+	if MaxFee > ceiling(0) {
+		t.Fatalf("MaxFee %d is above the node's flat ceiling", MaxFee)
+	}
+	dust := uint64(0) // the largest change IsDustVal calls dust at MaxFeeRate
+	for IsDustVal(P2PKHOutputSize, dust+1, MaxFeeRate) {
+		dust++
+	}
+	for size := uint64(1); size <= 100_000; size++ {
+		if worst := (size+P2PKHOutputSize)*MaxFeeRate + dust; worst > ceiling(size) {
+			t.Fatalf("at %d bytes a fee can reach %d atoms, above the node's ceiling %d", size, worst, ceiling(size))
+		}
+		// A transaction with no change pays MaxNoChangeFee of an estimated size
+		// that overstates the real one by a byte or two per ~300-byte input.
+		if real := size * 99 / 100; MaxNoChangeFee(size) > ceiling(real) {
+			t.Fatalf("estimated at %d bytes, %d real, MaxNoChangeFee is %d, above the node's ceiling %d",
+				size, real, MaxNoChangeFee(size), ceiling(real))
+		}
+	}
+}
+
+// TestMaxTxSize pins MaxTxSize to VAR's share of the node's default block
+// under SKA load: 10% of its default blockmaxsize of 375 000 bytes, plus a 10%
+// share of unused space, which a full block leaves none of.
+func TestMaxTxSize(t *testing.T) {
+	const nodeDefaultBlockMaxSize = 375_000
+	if MaxTxSize != nodeDefaultBlockMaxSize/10 {
+		t.Fatalf("MaxTxSize = %d, want %d", MaxTxSize, nodeDefaultBlockMaxSize/10)
+	}
+}

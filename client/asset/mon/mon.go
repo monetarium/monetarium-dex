@@ -1881,6 +1881,9 @@ func (dcr *ExchangeWallet) FundOrder(ord *asset.Order) (asset.Coins, []dex.Bytes
 		return nil, nil, 0, fmt.Errorf("suggested fee > configured limit. %d > %d", ord.FeeSuggestion, cfg.feeRateLimit)
 	}
 	// Check wallet's fee rate limit against server's max fee rate
+	if ord.MaxFeeRate > dexmon.MaxFeeRate { // a swap would be clamped under the market's rate
+		return nil, nil, 0, fmt.Errorf("server's max fee rate %d atoms/B is above %d, the most a VAR swap pays", ord.MaxFeeRate, dexmon.MaxFeeRate)
+	}
 	if cfg.feeRateLimit < ord.MaxFeeRate {
 		return nil, nil, 0, fmt.Errorf(
 			"%v: server's max fee rate %v higher than configured fee rate limit %v",
@@ -2200,6 +2203,10 @@ func (dcr *ExchangeWallet) fundMultiSplitTx(orders []*asset.MultiOrderValue, utx
 	enough := func(sum uint64, size uint32, utxo *compositeUTXO) (bool, uint64) {
 		totalSum := sum + utxo.value
 		totalSize := size + utxo.input.Size()
+		// +4: input count varints past 252; a change output may be added too.
+		if uint64(splitTxSizeWithoutInputs+totalSize)+4+dexmon.P2PKHOutputSize > dexmon.MaxTxSize {
+			return false, 0
+		}
 		splitTxFee := uint64(splitTxSizeWithoutInputs+totalSize) * splitTxFeeRate
 		req := totalOutputRequired + splitTxFee
 		return totalSum >= req, totalSum - req
@@ -2470,6 +2477,9 @@ func (dcr *ExchangeWallet) FundMultiOrder(mo *asset.MultiOrder, maxLock uint64) 
 	}
 
 	cfg := dcr.config()
+	if mo.MaxFeeRate > dexmon.MaxFeeRate { // a swap would be clamped under the market's rate
+		return nil, nil, 0, fmt.Errorf("server's max fee rate %d atoms/B is above %d, the most a VAR swap pays", mo.MaxFeeRate, dexmon.MaxFeeRate)
+	}
 	if cfg.feeRateLimit < mo.MaxFeeRate {
 		return nil, nil, 0, fmt.Errorf(
 			"%v: server's max fee rate %v higher than configured fee rate limit %v",
@@ -3290,11 +3300,11 @@ func (dcr *ExchangeWallet) Redeem(form *asset.RedeemForm) ([]dex.Bytes, asset.Co
 	if err != nil {
 		dcr.log.Errorf("calcBumpRate error: %v", err)
 	}
-	fee := feeRate * uint64(size)
+	fee := min(feeRate*uint64(size), dexmon.MaxNoChangeFee(uint64(size)))
 	if fee > totalIn {
 		// Double check that the fee bump isn't the issue.
 		feeRate = rawFeeRate
-		fee = feeRate * uint64(size)
+		fee = min(feeRate*uint64(size), dexmon.MaxNoChangeFee(uint64(size)))
 		if fee > totalIn {
 			return nil, nil, 0, fmt.Errorf("redeem tx not worth the fees")
 		}
@@ -3306,8 +3316,8 @@ func (dcr *ExchangeWallet) Redeem(form *asset.RedeemForm) ([]dex.Bytes, asset.Co
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	// One last check for dust.
-	if dexmon.IsDust(txOut, feeRate) {
+	// One last check for dust, at the rate the capped fee pays.
+	if dexmon.IsDust(txOut, fee/uint64(size)) {
 		return nil, nil, 0, fmt.Errorf("redeem output is dust")
 	}
 	msgTx.AddTxOut(txOut)
@@ -4095,7 +4105,7 @@ func (dcr *ExchangeWallet) refundTx(coinID, contract dex.Bytes, val uint64, refu
 	msgTx.AddTxIn(txIn)
 	// Calculate fees and add the change output.
 	size := msgTx.SerializeSize() + dexmon.RefundSigScriptSize + dexmon.P2PKHOutputSize
-	fee := feeRate * uint64(size)
+	fee := min(feeRate*uint64(size), dexmon.MaxNoChangeFee(uint64(size)))
 	if fee > val {
 		return nil, 0, 0, fmt.Errorf("refund tx not worth the fees")
 	}
@@ -4108,8 +4118,8 @@ func (dcr *ExchangeWallet) refundTx(coinID, contract dex.Bytes, val uint64, refu
 	}
 	pkScriptVer, pkScript := refundAddr.PaymentScript()
 	txOut := newTxOut(int64(val-fee), pkScriptVer, pkScript)
-	// One last check for dust.
-	if dexmon.IsDust(txOut, feeRate) {
+	// One last check for dust, at the rate the capped fee pays.
+	if dexmon.IsDust(txOut, fee/uint64(size)) {
 		return nil, 0, 0, fmt.Errorf("refund output is dust")
 	}
 	msgTx.AddTxOut(txOut)
@@ -4423,7 +4433,7 @@ func (dcr *ExchangeWallet) makeBondRefundTxV0(txid *chainhash.Hash, vout uint32,
 
 	// Calculate fees and add the refund output.
 	redeemSize := redeemMsgTx.SerializeSize() + dexmon.RedeemBondSigScriptSize + dexmon.P2PKHOutputSize
-	fee := feeRate * uint64(redeemSize)
+	fee := min(feeRate*uint64(redeemSize), dexmon.MaxNoChangeFee(uint64(redeemSize)))
 	if fee > amt {
 		return nil, fmt.Errorf("irredeemable bond at fee rate %d atoms/byte", feeRate)
 	}
@@ -4434,7 +4444,7 @@ func (dcr *ExchangeWallet) makeBondRefundTxV0(txid *chainhash.Hash, vout uint32,
 	}
 	redeemScriptVer, redeemPkScript := redeemAddr.PaymentScript()
 	redeemTxOut := newTxOut(int64(amt-fee), redeemScriptVer, redeemPkScript)
-	if dexmon.IsDust(redeemTxOut, feeRate) { // hard to imagine
+	if dexmon.IsDust(redeemTxOut, fee/uint64(redeemSize)) { // at the rate the capped fee pays; hard to imagine
 		return nil, fmt.Errorf("redeem output is dust")
 	}
 	redeemMsgTx.AddTxOut(redeemTxOut)
@@ -5170,6 +5180,7 @@ func (dcr *ExchangeWallet) sendWithReturn(baseTx *wire.MsgTx, feeRate uint64, su
 // with an added change output or a reduced value of the subtractFrom output.
 func (dcr *ExchangeWallet) signTxAndAddChange(baseTx *wire.MsgTx, feeRate uint64,
 	subtractFrom int32, changeAcct string) (*wire.MsgTx, *output, string, uint64, error) {
+	feeRate = min(feeRate, dexmon.MaxFeeRate) // keeps fee and dust change under the node's ceiling
 	// Sign the transaction to get an initial size estimate and calculate
 	// whether a change output would be dust.
 	sigCycles := 1
@@ -7342,13 +7353,13 @@ func (dcr *ExchangeWallet) RedeemGeocode(code []byte, msg string) (dex.Bytes, ui
 	if msgLen > 0 {
 		txSize += dexmon.TxOutOverhead + 1 /* opreturn */ + uint64(wire.VarIntSerializeSize(uint64(msgLen))) + uint64(msgLen)
 	}
-	fees := feeRate * txSize
+	fees := min(feeRate*txSize, dexmon.MaxNoChangeFee(txSize))
 
 	if uint64(redeemable) < fees {
 		return nil, 0, fmt.Errorf("estimated fees %d are less than the redeemable value %d", fees, redeemable)
 	}
 	win := uint64(redeemable) - fees
-	if dexmon.IsDustVal(dexmon.P2PKHOutputSize, win, feeRate) {
+	if dexmon.IsDustVal(dexmon.P2PKHOutputSize, win, fees/txSize) { // at the rate the capped fee pays
 		return nil, 0, fmt.Errorf("received value is dust after fees: %d - %d = %d", redeemable, fees, win)
 	}
 

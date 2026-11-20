@@ -197,6 +197,7 @@ type tRPCClient struct {
 	sendRawHash     *chainhash.Hash
 	sendRawErr      error
 	sentRawTx       *wire.MsgTx
+	sentRawTxs      []*wire.MsgTx // every tx passed to sendrawtransaction
 	txOutRes        map[outPoint]*chainjson.GetTxOutResult
 	txOutErr        error
 	bestBlockErr    error
@@ -365,6 +366,7 @@ func (c *tRPCClient) EstimateSmartFee(_ context.Context, confirmations int64, mo
 
 func (c *tRPCClient) SendRawTransaction(_ context.Context, tx *wire.MsgTx, allowHighFees bool) (*chainhash.Hash, error) {
 	c.sentRawTx = tx
+	c.sentRawTxs = append(c.sentRawTxs, tx)
 	if c.sendRawErr == nil && c.sendRawHash == nil {
 		h := tx.TxHash()
 		return &h, nil
