@@ -354,7 +354,11 @@ gets a real signer.
     37 500 bytes, VAR's share of a default block under SKA load. It may refuse the order at
     funding or fund it within the cap; either is accepted.
   - The test also records how many inputs coin selection picks, the question the item leaves
-    open.
+    open: 242 for an order of 2.4 VAR, a swap of about 40 500 bytes.
+  - An order of 2.1 VAR, 211 inputs and about 35 300 bytes, fits and must be swapped, with
+    and without a split.
+  - `FundMultiOrder` without a split picks each order's coins outside the shared funding
+    step, and this test does not reach it.
 - **Item 6, `TestFundingIgnoresSKA`.** The stub's SKA1 outputs have step 1's shape (four of
   1000 SKA1 and one of 5 SKA1), plus one of 1000 SKA2, all confirmed, spendable P2PKH like the
   VAR ones, and every amount funded, sent or withdrawn is above the stub's largest VAR output

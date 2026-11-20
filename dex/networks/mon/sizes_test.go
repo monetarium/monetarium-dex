@@ -240,3 +240,13 @@ func TestFeeCaps(t *testing.T) {
 		}
 	}
 }
+
+// TestMaxTxSize pins MaxTxSize to VAR's share of the node's default block
+// under SKA load: 10% of its default blockmaxsize of 375 000 bytes, plus a 10%
+// share of unused space, which a full block leaves none of.
+func TestMaxTxSize(t *testing.T) {
+	const nodeDefaultBlockMaxSize = 375_000
+	if MaxTxSize != nodeDefaultBlockMaxSize/10 {
+		t.Fatalf("MaxTxSize = %d, want %d", MaxTxSize, nodeDefaultBlockMaxSize/10)
+	}
+}

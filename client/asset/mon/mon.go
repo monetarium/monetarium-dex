@@ -2203,6 +2203,10 @@ func (dcr *ExchangeWallet) fundMultiSplitTx(orders []*asset.MultiOrderValue, utx
 	enough := func(sum uint64, size uint32, utxo *compositeUTXO) (bool, uint64) {
 		totalSum := sum + utxo.value
 		totalSize := size + utxo.input.Size()
+		// +4: input count varints past 252; a change output may be added too.
+		if uint64(splitTxSizeWithoutInputs+totalSize)+4+dexmon.P2PKHOutputSize > dexmon.MaxTxSize {
+			return false, 0
+		}
 		splitTxFee := uint64(splitTxSizeWithoutInputs+totalSize) * splitTxFeeRate
 		req := totalOutputRequired + splitTxFee
 		return totalSum >= req, totalSum - req

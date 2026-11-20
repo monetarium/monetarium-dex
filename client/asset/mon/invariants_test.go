@@ -987,3 +987,91 @@ func TestFeeRateCeiling(t *testing.T) {
 		t.Error("FundMultiOrder at a MaxFeeRate above 600: no error")
 	}
 }
+
+// TestLargeSwapRefused is item 5: under SKA load VAR gets about 37 500 bytes
+// of a default block, and a transaction larger than that never confirms. A
+// wallet holding only 300 outputs of 0.01 VAR gets an order of 2.4 VAR, which
+// takes 242 of them, a swap of about 40 500 bytes. The driver must not send a
+// swap or a split larger than that. An order of 2.1 VAR, 211 inputs and about
+// 35 300 bytes, fits and must be swapped, and so must the largest order
+// MaxOrder offers: its estimate selects coins as funding does.
+func TestLargeSwapRefused(t *testing.T) {
+	const maxSize = 37_500
+	for _, tc := range []struct {
+		val        uint64
+		split      bool
+		mustSwap   bool
+		mustRefuse bool
+	}{{2.4e8, false, false, true}, {2.4e8, true, false, true}, {2.1e8, false, true, false}, {2.1e8, true, true, false},
+		{0, false, true, false}, // 0: MaxOrder's largest order
+		// At the cap's margin: 223 inputs, the most it allows, and 224, refused
+		// although that swap (about 37 496 bytes) would still fit.
+		{2.215e8, false, true, false}, {2.225e8, false, false, true}} {
+		t.Run(fmt.Sprintf("%d atoms, split=%v", tc.val, tc.split), func(t *testing.T) {
+			val, split := tc.val, tc.split
+			wallet, node, shutdown := tNewWallet()
+			defer shutdown()
+			node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
+			node.signFunc = func(tx *wire.MsgTx) (*wire.MsgTx, bool, error) { return signFunc(tx, dexmon.P2PKHSigScriptSize) }
+			node.privWIF, _ = dcrutil.NewWIF(append(make([]byte, 31), 1), tChainParams.PrivateKeyID, dcrec.STEcdsaSecp256k1)
+			for vout := range uint32(300) {
+				node.unspent = append(node.unspent, *tUnspent(vout, "0.01"))
+			}
+			node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("3")}}
+			if val == 0 {
+				est, err := wallet.MaxOrder(&asset.MaxOrderForm{LotSize: tLotSize, FeeSuggestion: feeSuggestion, MaxFeeRate: tDCR.MaxFeeRate})
+				if err != nil {
+					t.Fatalf("MaxOrder: %v", err)
+				}
+				val = est.Lots * tLotSize
+				t.Logf("MaxOrder: %d lots", est.Lots)
+			}
+			coins, _, _, err := wallet.FundOrder(&asset.Order{Version: version, Value: val, MaxSwapCount: val / tLotSize,
+				MaxFeeRate: tDCR.MaxFeeRate, FeeSuggestion: feeSuggestion,
+				Options: map[string]string{"swapsplit": fmt.Sprint(split)}})
+			t.Logf("FundOrder: %d coins, error %v", len(coins), err)
+			if tc.mustRefuse && err == nil {
+				t.Errorf("FundOrder funded %d atoms with %d coins, want a refusal", val, len(coins))
+			}
+			if err == nil {
+				_, _, _, err = wallet.Swap(&asset.Swaps{
+					Inputs:    coins,
+					Contracts: []*asset.Contract{{Address: tPKHAddr.String(), Value: val, SecretHash: make([]byte, 32), LockTime: 1_800_000_000}},
+					FeeRate:   tDCR.MaxFeeRate,
+				})
+				t.Logf("Swap: error %v", err)
+			}
+			if tc.mustSwap && (err != nil || len(node.sentRawTxs) == 0) {
+				t.Errorf("an order within the cap was not swapped: %v", err)
+			}
+			for _, tx := range node.sentRawTxs {
+				if size := tx.SerializeSize(); size > maxSize {
+					t.Errorf("sent a transaction of %d bytes with %d inputs, above %d", size, len(tx.TxIn), maxSize)
+				}
+			}
+		})
+	}
+	// FundMultiOrder: per-order selection cannot fund 2.4 VAR under the cap,
+	// so it falls back to a multi-order split, which is capped as well.
+	t.Run("FundMultiOrder split", func(t *testing.T) {
+		wallet, node, shutdown := tNewWallet()
+		defer shutdown()
+		node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
+		node.signFunc = func(tx *wire.MsgTx) (*wire.MsgTx, bool, error) { return signFunc(tx, dexmon.P2PKHSigScriptSize) }
+		for vout := range uint32(300) {
+			node.unspent = append(node.unspent, *tUnspent(vout, "0.01"))
+		}
+		node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("3")}}
+		_, _, _, err := wallet.FundMultiOrder(&asset.MultiOrder{Values: []*asset.MultiOrderValue{{Value: 2.4e8, MaxSwapCount: 2.4e8 / tLotSize}},
+			MaxFeeRate: tDCR.MaxFeeRate, FeeSuggestion: feeSuggestion, Options: map[string]string{multiSplitKey: "true"}}, 0)
+		if err == nil {
+			t.Error("FundMultiOrder funded the 2.4 VAR order") // only more than the cap's inputs cover it
+		}
+		t.Logf("FundMultiOrder: error %v", err)
+		for _, tx := range node.sentRawTxs {
+			if size := tx.SerializeSize(); size > maxSize {
+				t.Errorf("sent a transaction of %d bytes with %d inputs, above %d", size, len(tx.TxIn), maxSize)
+			}
+		}
+	})
+}
