@@ -660,8 +660,7 @@ func tSPVSeam(fx []walletjson.ListUnspentResult) *tSeam {
 		dcrw.unspents = append(dcrw.unspents, &fx[i])
 	}
 	dcrw.acctNums = map[string]uint32{tTestAccounts.PrimaryAccount: 0, tTestAccounts.UnmixedAccount: 1, tTestAccounts.TradingAccount: 2}
-	dcrw.acctBals = map[uint32]wallet.Balances{0: {Spendable: 15e8, Total: 15e8}, 1: {}, 2: {}}
-	dcrw.knownAddr = &tKnownAddress{Address: tPKHAddr, acctName: tTestAccounts.PrimaryAccount}
+	dcrw.acctBals = map[uint32]wallet.Balances{1: {}, 2: {}} // the primary keeps the default 15 VAR
 	return &tSeam{w: nw.ExchangeWallet, shutdown: shutdown,
 		locked: func() []*wire.OutPoint { return dcrw.lockedOutpoints },
 		sent:   func() []*wire.MsgTx { return dcrw.sentTxs },
@@ -806,12 +805,9 @@ func tSPVSignSeam(t *testing.T, s *tSigner) *tSignSeam {
 	dcrw.signFunc = s.signHashType
 	dcrw.extAddr, dcrw.intAddr = s.addr, s.addr
 	dcrw.priv = secp256k1.PrivKeyFromBytes(s.priv)
-	nw.spvw.accts.Store(XCWalletAccounts{PrimaryAccount: tAcctName}) // tUnspent's account
-	dcrw.knownAddr = &tKnownAddress{Address: s.addr, acctName: tAcctName}
 	for _, u := range tSignUnspents(s) {
 		dcrw.unspents = append(dcrw.unspents, &u)
 	}
-	dcrw.acctBal = wallet.Balances{Spendable: 15e8, Total: 15e8}
 	return &tSignSeam{w: nw.ExchangeWallet, shutdown: shutdown,
 		sent:  func() []*wire.MsgTx { return dcrw.sentTxs },
 		reset: func() { dcrw.sentTxs = nil },
