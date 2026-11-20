@@ -569,19 +569,16 @@ func TestTreasuryPolicyConversion(t *testing.T) {
 
 // TestNoDecredText checks the package's user-visible strings (config option
 // text, returned errors, log lines) for Decred's names and dcrwallet's ports.
-// The literals allowed below are endpoints the port keeps for now: the fee
-// oracle (replaced in plan step 6), the mixing server, the VSP list and the
-// dcrdata lookup, which are outside the PoC.
+// The literals allowed below are endpoints the port keeps for now: the mixing
+// server, the VSP list and the dcrdata lookup, which are outside the PoC.
 func TestNoDecredText(t *testing.T) {
 	allowed := map[string]bool{
-		`"mix.decred.org:5760"`:  true,
-		`"mix.decred.org:15760"`: true,
-		`"https://testnet.dcrdata.org/insight/api/utils/estimatefee?nbBlocks=%d"`:  true,
-		`"https://explorer.dcrdata.org/insight/api/utils/estimatefee?nbBlocks=%d"`: true,
-		`"https://api.decred.org/?c=vsp"`:                                          true,
-		`"error getting tx from dcrdata: %w"`:                                      true,
-		`"https://dcrdata.decred.org/api/"`:                                        true,
-		`"https://testnet.dcrdata.org/api/"`:                                       true,
+		`"mix.decred.org:5760"`:               true,
+		`"mix.decred.org:15760"`:              true,
+		`"https://api.decred.org/?c=vsp"`:     true,
+		`"error getting tx from dcrdata: %w"`: true,
+		`"https://dcrdata.decred.org/api/"`:   true,
+		`"https://testnet.dcrdata.org/api/"`:  true,
 	}
 	bad := regexp.MustCompile(`\b(DCR|dcr|Decred|decred|dcrwallet|Dcrwallet|dcrd|dcrdata|9110|19110|19557)\b`)
 	files, err := filepath.Glob("*.go")

@@ -10,6 +10,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -72,6 +74,100 @@ func TestFeeRateUnits(t *testing.T) {
 		if got := wallet.FeeRate(); got != 0 {
 			t.Errorf("estimatesmartfee %q: FeeRate = %d atoms/B, want 0", bad, got)
 		}
+	}
+}
+
+// TestFeeOracle is item 7 for the native SPV wallet, which has no
+// estimatesmartfee and asks the network's explorer instead: Monetarium's on
+// mainnet and testnet, none on simnet. An oracle answer below the node's 10
+// atoms/B minimum, such as a Decred-shaped one, is raised to it. With the
+// oracle unreachable or absent FeeRate gives no rate (0), and core falls back
+// to the server's. In every case a send, given FeeRate's answer as core
+// gives it, pays at least 10 atoms/B, as it does for a low suggestion or a
+// low configured fallback rate.
+func TestFeeOracle(t *testing.T) {
+	for net, want := range map[dex.Network]string{
+		dex.Mainnet: "https://monetarium.online/insight/api/utils/estimatefee?nbBlocks=%d",
+		dex.Testnet: "https://testnet.monetarium.online/insight/api/utils/estimatefee?nbBlocks=%d",
+		dex.Simnet:  "",
+	} {
+		if got := feeOracleURL(net); got != want {
+			t.Errorf("%s oracle %q, want %q", net, got, want)
+		}
+	}
+
+	// Every rate is raised to 10, so a lower limit is refused.
+	for limit, ok := range map[float64]bool{0.00009: false, 0.0001: true} { // coins/kB: 9 and 10 atoms/B
+		if _, err := getExchangeWalletCfg(&walletConfig{FeeRateLimit: limit}, tLogger); (err == nil) != ok {
+			t.Errorf("fee rate limit %v coins/kB: error %v, want refused = %v", limit, err, !ok)
+		}
+	}
+
+	var calls int
+	oracle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		q := r.URL.Query() // answered as insight does: keyed by the block count asked for
+		fmt.Fprintf(w, `{%q:%s}`, q.Get("nbBlocks"), q.Get("rate"))
+	}))
+	defer oracle.Close()
+
+	for _, tt := range []struct {
+		name       string
+		url        string // "" is no oracle
+		suggestion uint64 // the send's rate if not FeeRate's
+		fallback   uint64
+		wantRate   uint64 // FeeRate
+		wantCalls  int
+	}{
+		{name: "unreachable", url: "http://127.0.0.1:0/?nbBlocks=%d"}, // port 0 is never listening
+		{name: "below 10 atoms/B", url: oracle.URL + `/?rate=0.00009&nbBlocks=%d`, wantRate: 10, wantCalls: 1},
+		{name: "valid", url: oracle.URL + `/?rate=0.0002&nbBlocks=%d`, wantRate: 20, wantCalls: 1},
+		{name: "no oracle"},
+		{name: "low suggestion", suggestion: 5},
+		{name: "low fallback", fallback: 5},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTSigner(t)
+			seam := tSPVSignSeam(t, s) // fresh: the wallet caches oracle answers and failures
+			defer seam.shutdown()
+			seam.w.feeOracleURL = tt.url
+			cfg := seam.w.config()
+			cfg.apiFeeFallback = true
+			if tt.fallback != 0 {
+				cfg.fallbackFeeRate = tt.fallback
+			}
+			calls = 0
+			rate := seam.w.FeeRate()
+			if rate != tt.wantRate {
+				t.Errorf("FeeRate = %d atoms/B, want %d", rate, tt.wantRate)
+			}
+			if calls != tt.wantCalls {
+				t.Errorf("oracle asked %d times, want %d", calls, tt.wantCalls)
+			}
+			if tt.url == "" && seam.w.oracleFailing {
+				t.Error("no oracle, but the wallet tried one") // a URL left unset is not a failing oracle
+			}
+			if tt.suggestion != 0 {
+				rate = tt.suggestion
+			}
+			if _, err := seam.w.Send(s.addr.String(), 1e8, rate); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			if len(seam.sent()) != 1 {
+				t.Fatalf("%d transactions sent, want 1", len(seam.sent()))
+			}
+			tx := seam.sent()[0]
+			fee := int64(0)
+			for _, in := range tx.TxIn {
+				fee += []int64{4e8, 5e8, 6e8}[in.PreviousOutPoint.Index] // tSignUnspents' amounts
+			}
+			for _, out := range tx.TxOut {
+				fee -= out.Value
+			}
+			if size := int64(tx.SerializeSize()); fee < int64(dexmon.MinRelayFeeRate)*size {
+				t.Errorf("send pays %d atoms for %d bytes, below %d atoms/B", fee, size, dexmon.MinRelayFeeRate)
+			}
+		})
 	}
 }
 
