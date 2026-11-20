@@ -330,8 +330,11 @@ gets a real signer.
   wallet ignores the high-fee flag.
 - **Item 4, `TestRedeemRefundAtMinRelay`.** A redeem and a refund at 10 atoms/B, each signed
   with a key ground for that transaction so its signature has a 33-byte R and a 32-byte S.
-  Signatures are deterministic (RFC 6979), so the ground keys become fixtures. Each
-  transaction must pay at least the node's minimum fee for its Monetarium serialized size.
+  Signatures are deterministic (RFC 6979), so the test grinds over a fixed key sequence and
+  finds the same key on every run; a fixed key would stop giving those lengths whenever a
+  change moved the fee. Each transaction must pay at least the node's minimum fee for its
+  Monetarium serialized size. `DERSigLength` keeps one byte of slack over this signature, so
+  a size estimate one byte short still passes and two bytes short fail.
 - **Item 4, `TestDustChange`.** A swap whose change would be 6040 atoms at 10 atoms/B, its own
   output's fee counted, must either create no change output or create change of at least the
   node's dust threshold, 6060.
