@@ -35,6 +35,31 @@ require (
 	github.com/ltcsuite/lnd/tlv v0.0.0-20240222214433-454d35886119 // indirect
 	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
+	github.com/monetarium/monetarium-node/addrmgr v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/blockchain/stake v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/blockchain/standalone v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/chaincfg v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/chaincfg/chainhash v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/cointype v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/connmgr v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/container/lru v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/crypto/blake256 v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/crypto/rand v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/crypto/ripemd160 v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/database v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrec v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrec/edwards v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrec/secp256k1 v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrjson v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrutil v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/gcs v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/hdkeychain v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/mixing v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/rpc/jsonrpc/types v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/rpcclient v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/txscript v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/wire v1.3.14 // indirect
+	github.com/monetarium/monetarium-wallet v1.3.15-0.20261115125850-42aa5102b0a2 // indirect
 	github.com/nu7hatch/gouuid v0.0.0-20131221200532-179d4d0c4d8d // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_golang v1.14.0 // indirect
