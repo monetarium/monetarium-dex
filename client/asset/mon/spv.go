@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -620,7 +621,11 @@ func (w *spvWallet) LockedOutputs(ctx context.Context, accountName string) ([]ch
 func (w *spvWallet) Unspents(ctx context.Context, accountName string) ([]*walletjson.ListUnspentResult, error) {
 	// Only VAR funds VAR transactions; nil would list every coin type.
 	coinType := cointype.CoinTypeVAR
-	return w.dcrWallet.ListUnspent(ctx, 0, math.MaxInt32, nil, accountName, &coinType)
+	unspents, err := w.dcrWallet.ListUnspent(ctx, 0, math.MaxInt32, nil, accountName, &coinType)
+	// A staker-fee output can be respent by a miner without the owner's key.
+	return slices.DeleteFunc(unspents, func(u *walletjson.ListUnspentResult) bool {
+		return u.TxType == int(stake.TxTypeSSFee)
+	}), err
 }
 
 // LockUnspent locks or unlocks the specified outpoint.

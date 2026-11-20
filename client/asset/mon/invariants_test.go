@@ -306,23 +306,66 @@ func skaFundingFixtures() (map[string][]walletjson.ListUnspentResult, map[outPoi
 // block without the owner's key, as an augmented staker-fee input. The wallet
 // lists it once matured, spendable, with an OP_SSGEN-tagged P2PKH script.
 func TestStakerFeeNotSelected(t *testing.T) {
-	var unspents []walletjson.ListUnspentResult
-	for i, amt := range []string{"4", "5", "6"} {
-		unspents = append(unspents, *tUnspent(uint32(i), amt))
+	testStakerFeeNotSelected(t, tRPCSeam)
+}
+
+// TestSPVStakerFeeNotSelected is TestStakerFeeNotSelected over the native SPV
+// wallet, whose account transfer must not sweep a staker-fee output either.
+func TestSPVStakerFeeNotSelected(t *testing.T) {
+	testStakerFeeNotSelected(t, tSPVSeam)
+
+	nw, dcrw, shutdown := tNewNativeWallet()
+	defer shutdown()
+	nw.spvw.setAccounts(true)
+	fee := tStakerFeeUnspent(t, 20, "1000", 100_000)
+	for _, u := range []*walletjson.ListUnspentResult{tUnspent(0, "4"), fee} {
+		u.Account = mixedAccountName
+		dcrw.unspents = append(dcrw.unspents, u)
 	}
+	if err := nw.transferAccount(nw.ctx, defaultAccountName, mixedAccountName); err != nil {
+		t.Fatalf("transferAccount: %v", err)
+	}
+	if len(dcrw.sentTxs) != 1 {
+		t.Fatalf("%d transactions sent, want 1", len(dcrw.sentTxs))
+	}
+	for _, in := range dcrw.sentTxs[0].TxIn {
+		if in.PreviousOutPoint.Index != 0 {
+			t.Errorf("transferAccount spent %s, want only the VAR output", in.PreviousOutPoint)
+		}
+	}
+}
+
+// tStakerFeeUnspent is a matured staker-fee output paying tPKHAddr, as the
+// wallet lists it.
+func tStakerFeeUnspent(t *testing.T, vout uint32, amt string, confs int64) *walletjson.ListUnspentResult {
+	t.Helper()
+	u := tUnspent(vout, amt)
+	u.TxType, u.Tree, u.Confirmations = int(stake.TxTypeSSFee), wire.TxTreeStake, confs
+	u.ScriptPubKey = hex.EncodeToString(tStakePayout(t))
+	return u
+}
+
+// tStakePayout is the OP_SSGEN-tagged P2PKH script of tPKHAddr.
+func tStakePayout(t *testing.T) []byte {
+	t.Helper()
 	payout, err := stake.ConsolidationAddrToPkScript(tPKHAddr.(*stdaddr.AddressPubKeyHashEcdsaSecp256k1V0).Hash160()[:])
 	if err != nil {
 		t.Fatal(err)
+	}
+	return payout
+}
+
+func testStakerFeeNotSelected(t *testing.T, newSeam func([]walletjson.ListUnspentResult) *tSeam) {
+	var unspents []walletjson.ListUnspentResult
+	for i, amt := range []string{"4", "5", "6"} {
+		unspents = append(unspents, *tUnspent(uint32(i), amt))
 	}
 	avoid := make(map[outPoint]bool)
 	for vout, o := range map[uint32]struct {
 		amt   string
 		confs int64
 	}{20: {"1000", 16}, 21: {"3", 100_000}} { // just matured on simnet, and old
-		u := tUnspent(vout, o.amt)
-		u.TxType, u.Tree, u.Confirmations = int(stake.TxTypeSSFee), wire.TxTreeStake, o.confs
-		u.ScriptPubKey = hex.EncodeToString(payout)
-		unspents = append(unspents, *u)
+		unspents = append(unspents, *tStakerFeeUnspent(t, vout, o.amt, o.confs))
 		avoid[newOutPoint(tTxHash, vout)] = true
 	}
 	trading := slices.Clone(unspents)
@@ -331,22 +374,19 @@ func TestStakerFeeNotSelected(t *testing.T) {
 			trading[i].Account = tTradingAcct // the trading account is read on its own
 		}
 	}
-	testFundingAvoids(t, tRPCSeam, map[string][]walletjson.ListUnspentResult{"staker fee": unspents,
+	testFundingAvoids(t, newSeam, map[string][]walletjson.ListUnspentResult{"staker fee": unspents,
 		"staker fee in the trading account": trading}, avoid)
 
 	// Only the staker-fee type goes: the owner's vote and revocation outputs still fund an order
 	// that the 1 VAR regular output cannot.
 	for _, txType := range []stake.TxType{stake.TxTypeSSGen, stake.TxTypeSSRtx} {
-		wallet, node, shutdown := tNewWallet()
 		reward := tUnspent(1, "10")
 		reward.TxType, reward.Tree, reward.Confirmations = int(txType), wire.TxTreeStake, 1000
-		reward.ScriptPubKey = hex.EncodeToString(payout)
-		node.unspent = []walletjson.ListUnspentResult{*tUnspent(0, "1"), *reward}
-		node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
-		node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("11")}}
-		_, _, _, err := wallet.FundOrder(&asset.Order{Version: version, Value: 5e8, MaxSwapCount: 5e8 / tLotSize,
+		reward.ScriptPubKey = hex.EncodeToString(tStakePayout(t))
+		seam := newSeam([]walletjson.ListUnspentResult{*tUnspent(0, "1"), *reward})
+		_, _, _, err := seam.w.FundOrder(&asset.Order{Version: version, Value: 5e8, MaxSwapCount: 5e8 / tLotSize,
 			MaxFeeRate: tDCR.MaxFeeRate, FeeSuggestion: feeSuggestion})
-		shutdown()
+		seam.shutdown()
 		if err != nil {
 			t.Errorf("tx type %v: FundOrder: %v", txType, err)
 		}
