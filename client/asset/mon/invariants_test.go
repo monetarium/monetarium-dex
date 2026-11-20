@@ -1,3 +1,5 @@
+//go:build !harness && !vspd
+
 package mon
 
 // Tests for the items of docs/var-port/invariants.md, over the RPC wallet and,
