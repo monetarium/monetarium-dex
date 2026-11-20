@@ -463,7 +463,12 @@ func TestTransferAccountAtoms(t *testing.T) {
 	w := &NativeWallet{ExchangeWallet: xw, spvw: spvw}
 	node.changeAddr = tPKHAddr
 
-	dcrw.unspents = []*walletjson.ListUnspentResult{tUnspent(0, "1.29"), tUnspent(1, "0.00000029")}
+	mixed := func(vout uint32, amt string) *walletjson.ListUnspentResult {
+		u := tUnspent(vout, amt)
+		u.Account = mixedAccountName // the account swept
+		return u
+	}
+	dcrw.unspents = []*walletjson.ListUnspentResult{mixed(0, "1.29"), mixed(1, "0.00000029")}
 	if err := w.transferAccount(tCtx, "default", mixedAccountName); err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +478,7 @@ func TestTransferAccountAtoms(t *testing.T) {
 	}
 
 	node.sentRawTx = nil
-	dcrw.unspents = []*walletjson.ListUnspentResult{tUnspent(0, "1.000000001")}
+	dcrw.unspents = []*walletjson.ListUnspentResult{mixed(0, "1.000000001")}
 	err := w.transferAccount(tCtx, "default", mixedAccountName)
 	if err == nil || !strings.Contains(err.Error(), "1.000000001") || node.sentRawTx != nil {
 		t.Fatalf("transferAccount error = %v, sent %v; want the amount refused, nothing sent", err, node.sentRawTx)

@@ -85,7 +85,9 @@ type tDcrWallet struct {
 	spvBlocks        []*wire.MsgBlock
 	spvBlocksErr     error
 	unlockedOutpoint *wire.OutPoint
-	lockedOutpoint   *wire.OutPoint
+	lockedOutpoint   *wire.OutPoint   // the last one locked
+	lockedOutpoints  []*wire.OutPoint // every one locked
+	sentTxs          []*wire.MsgTx    // every tx published
 	stakeInfo        wallet.StakeInfoData
 	rescanUpdates    []wallet.RescanProgress
 }
@@ -114,12 +116,10 @@ func (w *tDcrWallet) LockedOutpoints(ctx context.Context, accountName string) ([
 }
 
 func (w *tDcrWallet) ListUnspent(ctx context.Context, minconf, maxconf int32, addresses map[string]struct{}, accountName string, coinType *cointype.CoinType) ([]*walletjson.ListUnspentResult, error) {
-	if coinType == nil { // all coin types, as the wallet does
-		return w.unspents, w.listUnspentErr
-	}
 	var res []*walletjson.ListUnspentResult
 	for _, u := range w.unspents {
-		if cointype.CoinType(u.CoinType) == *coinType {
+		// nil lists all coin types and "" all accounts, as the wallet does.
+		if (coinType == nil || cointype.CoinType(u.CoinType) == *coinType) && (accountName == "" || u.Account == accountName) {
 			res = append(res, u)
 		}
 	}
@@ -138,6 +138,7 @@ func (w *tDcrWallet) LockOutpoint(txHash *chainhash.Hash, index uint32) {
 		Hash:  *txHash,
 		Index: index,
 	}
+	w.lockedOutpoints = append(w.lockedOutpoints, w.lockedOutpoint)
 }
 
 func (w *tDcrWallet) ListTransactionDetails(ctx context.Context, txHash *chainhash.Hash) ([]walletjson.ListTransactionsResult, error) {
@@ -175,6 +176,7 @@ func (w *tDcrWallet) PublishTransaction(ctx context.Context, tx *wire.MsgTx, n w
 	if w.publishTxErr != nil {
 		return nil, w.publishTxErr
 	}
+	w.sentTxs = append(w.sentTxs, tx)
 	h := tx.TxHash()
 	return &h, nil
 }
@@ -469,6 +471,30 @@ func tNewSpvWallet() (*spvWallet, *tDcrWallet) {
 			blocks: make(map[chainhash.Hash]*cachedBlock),
 		},
 	}, dcrw
+}
+
+// tNewNativeWallet is the SPV test seam: a NativeWallet over the tDcrWallet
+// mock, connected, with the mock's addresses set to tPKHAddr.
+func tNewNativeWallet() (*NativeWallet, *tDcrWallet, func()) {
+	ew, err := unconnectedWallet(&asset.WalletConfig{Emit: asset.NewWalletEmitter(make(chan asset.WalletNotification, 128), BipID, tLogger),
+		PeersChange: func(uint32, error) {}}, &walletConfig{}, tChainParams, tLogger, dex.Simnet)
+	if err != nil {
+		panic(err.Error())
+	}
+	spvw, dcrw := tNewSpvWallet()
+	spvw.chainParams = tChainParams
+	spvw.setAccounts(false)
+	dcrw.extAddr, dcrw.intAddr = tPKHAddr, tPKHAddr
+	ew.wallet = spvw
+	ew.connected.Store(true)
+	ctx, shutdown := context.WithCancel(tCtx)
+	ew.ctx = ctx
+	tip, err := ew.getBestBlock(ctx)
+	if err != nil {
+		panic(err.Error())
+	}
+	ew.currentTip.Store(tip)
+	return &NativeWallet{ExchangeWallet: ew, spvw: spvw}, dcrw, shutdown
 }
 
 type tKnownAddress struct {

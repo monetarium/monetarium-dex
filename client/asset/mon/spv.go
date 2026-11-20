@@ -618,7 +618,9 @@ func (w *spvWallet) LockedOutputs(ctx context.Context, accountName string) ([]ch
 // Unspents fetches unspent outputs for the specified account.
 // Part of the Wallet interface.
 func (w *spvWallet) Unspents(ctx context.Context, accountName string) ([]*walletjson.ListUnspentResult, error) {
-	return w.dcrWallet.ListUnspent(ctx, 0, math.MaxInt32, nil, accountName, nil)
+	// Only VAR funds VAR transactions; nil would list every coin type.
+	coinType := cointype.CoinTypeVAR
+	return w.dcrWallet.ListUnspent(ctx, 0, math.MaxInt32, nil, accountName, &coinType)
 }
 
 // LockUnspent locks or unlocks the specified outpoint.

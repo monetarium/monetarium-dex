@@ -1,12 +1,16 @@
+//go:build !harness && !vspd
+
 package mon
 
-// Tests for the items of docs/var-port/invariants.md, over the RPC wallet.
+// Tests for the items of docs/var-port/invariants.md, over the RPC wallet and,
+// where named SPV, the native SPV wallet.
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -28,6 +32,7 @@ import (
 	"github.com/monetarium/monetarium-node/txscript/stdaddr"
 	"github.com/monetarium/monetarium-node/wire"
 	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
+	"github.com/monetarium/monetarium-wallet/wallet"
 )
 
 // TestFeeRateUnits is item 7, for an RPC wallet in RPC sync mode:
@@ -188,6 +193,84 @@ const tTradingAcct = "tTradingAcct"
 // driver that read an SKA1 output as VAR would cover it with a 1000 SKA1 one;
 // FundMultiOrder takes the set that over-funds least, which the 5 SKA1 enters.
 func TestFundingIgnoresSKA(t *testing.T) {
+	fixtures, ska := skaFundingFixtures()
+	testFundingAvoids(t, tRPCSeam, fixtures, ska)
+}
+
+// TestSPVFundingIgnoresSKA is TestFundingIgnoresSKA over the native SPV wallet.
+func TestSPVFundingIgnoresSKA(t *testing.T) {
+	fixtures, ska := skaFundingFixtures()
+	testFundingAvoids(t, tSPVSeam, fixtures, ska)
+}
+
+// TestTransferAccountIgnoresSKA is item 6 for the native wallet's account
+// transfer: stopping mixing sweeps the mixed and trading accounts into the
+// default one, and the simnet mixer sweeps the default account into the mixed
+// one. Every account holds SKA outputs next to VAR ones; each sweep, run with
+// mixing on, must spend every VAR output of its accounts and no SKA one.
+func TestTransferAccountIgnoresSKA(t *testing.T) {
+	var round []walletjson.ListUnspentResult
+	add := func(vout uint32, amt, acct string, coinType uint8) {
+		u := tUnspent(vout, amt)
+		u.Account, u.CoinType = acct, coinType
+		round = append(round, *u)
+	}
+	add(0, "4", mixedAccountName, 0)
+	add(1, "5", tradingAccountName, 0)
+	add(2, "6", defaultAccountName, 0)
+	add(10, "1000", mixedAccountName, 1)
+	add(11, "5", tradingAccountName, 1)
+	add(12, "1000", tradingAccountName, 2)
+	add(13, "1000", defaultAccountName, 1)
+	fractional := slices.Clone(round)
+	for i, acct := range []string{mixedAccountName, defaultAccountName} {
+		u := tUnspent(uint32(14+i), "0.123456789012345678") // more decimals than VAR has
+		u.Account, u.CoinType = acct, 1
+		fractional = append(fractional, *u)
+	}
+
+	sweeps := []struct {
+		name string
+		to   string
+		from []string
+		vars []uint32
+	}{
+		{"stop mixing", defaultAccountName, []string{mixedAccountName, tradingAccountName}, []uint32{0, 1}},
+		{"simnet mixer", mixedAccountName, []string{defaultAccountName}, []uint32{2}},
+	}
+	for name, fx := range map[string][]walletjson.ListUnspentResult{"round SKA": round, "with fractional SKA1": fractional} {
+		for _, sw := range sweeps {
+			t.Run(name+"/"+sw.name, func(t *testing.T) {
+				nw, dcrw, shutdown := tNewNativeWallet()
+				defer shutdown()
+				nw.spvw.setAccounts(true)
+				for i := range fx {
+					dcrw.unspents = append(dcrw.unspents, &fx[i])
+				}
+				if err := nw.transferAccount(nw.ctx, sw.to, sw.from...); err != nil {
+					t.Fatalf("transferAccount: %v", err)
+				}
+				if len(dcrw.sentTxs) != 1 {
+					t.Fatalf("%d transactions sent, want 1", len(dcrw.sentTxs))
+				}
+				var spent, want []outPoint
+				for _, in := range dcrw.sentTxs[0].TxIn {
+					spent = append(spent, newOutPoint(&in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index))
+				}
+				for _, vout := range sw.vars {
+					want = append(want, newOutPoint(tTxHash, vout))
+				}
+				if !reflect.DeepEqual(spent, want) {
+					t.Errorf("spent %v, want the VAR outputs %v", spent, want)
+				}
+			})
+		}
+	}
+}
+
+// skaFundingFixtures are item 6's listunspent fixtures and the SKA outpoints
+// in them.
+func skaFundingFixtures() (map[string][]walletjson.ListUnspentResult, map[outPoint]bool) {
 	var unspents []walletjson.ListUnspentResult
 	for i, amt := range []string{"4", "5", "6"} {
 		unspents = append(unspents, *tUnspent(uint32(i), amt))
@@ -215,7 +298,7 @@ func TestFundingIgnoresSKA(t *testing.T) {
 	addSKA(15, "0.123456789012345678", 1) // SKA change after an SKA fee; more decimals than VAR has
 	fixtures := map[string][]walletjson.ListUnspentResult{"round SKA": round, "with fractional SKA1": unspents,
 		"SKA in the trading account": trading}
-	testFundingAvoids(t, fixtures, ska)
+	return fixtures, ska
 }
 
 // TestStakerFeeNotSelected is item 8: an output of a staker-fee transaction
@@ -248,7 +331,7 @@ func TestStakerFeeNotSelected(t *testing.T) {
 			trading[i].Account = tTradingAcct // the trading account is read on its own
 		}
 	}
-	testFundingAvoids(t, map[string][]walletjson.ListUnspentResult{"staker fee": unspents,
+	testFundingAvoids(t, tRPCSeam, map[string][]walletjson.ListUnspentResult{"staker fee": unspents,
 		"staker fee in the trading account": trading}, avoid)
 
 	// Only the staker-fee type goes: the owner's vote and revocation outputs still fund an order
@@ -276,7 +359,8 @@ func TestStakerFeeNotSelected(t *testing.T) {
 // ordinary VAR one would cover it with a large one; FundMultiOrder takes the
 // set that over-funds least, so each fixture also holds a small one. Each path must
 // succeed without returning, locking or spending an avoided outpoint.
-func testFundingAvoids(t *testing.T, fixtures map[string][]walletjson.ListUnspentResult, avoid map[outPoint]bool) {
+func testFundingAvoids(t *testing.T, newSeam func([]walletjson.ListUnspentResult) *tSeam,
+	fixtures map[string][]walletjson.ListUnspentResult, avoid map[outPoint]bool) {
 	t.Helper()
 	const largestVAR = 6e8
 	order := func(split bool) *asset.Order {
@@ -355,19 +439,11 @@ func testFundingAvoids(t *testing.T, fixtures map[string][]walletjson.ListUnspen
 	for fxName, fx := range fixtures {
 		for _, tc := range cases {
 			t.Run(fxName+"/"+tc.name, func(t *testing.T) {
-				wallet, node, shutdown := tNewWallet() // fresh: the stub's listunspent ignores locks
-				defer shutdown()
-				wallet.wallet.(*rpcWallet).accountsV.Store(XCWalletAccounts{PrimaryAccount: tAcctName, UnmixedAccount: "tUnmixedAcct", TradingAccount: tTradingAcct})
-				node.unspent = fx
-				node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
-				unmixed, trading := tAcctBal("0"), tAcctBal("0")
-				unmixed.AccountName, trading.AccountName = "tUnmixedAcct", tTradingAcct
-				node.balanceResult = &walletjson.GetBalanceResult{
-					Balances: []walletjson.GetAccountBalanceResult{tAcctBal("15"), unmixed, trading},
-				}
-				wallet.config().useSplitTx = true
+				seam := newSeam(fx) // fresh: the stubs' listunspent ignores locks
+				defer seam.shutdown()
+				seam.w.config().useSplitTx = true
 
-				coins, err := tc.run(wallet)
+				coins, err := tc.run(seam.w)
 				if err != nil {
 					t.Fatalf("error: %v", err) // a driver that picks an avoided output and then fails must not pass
 				}
@@ -377,36 +453,80 @@ func testFundingAvoids(t *testing.T, fixtures map[string][]walletjson.ListUnspen
 						t.Errorf("returned avoided coin %s", c)
 					}
 				}
-				for _, op := range node.lockedCoins {
+				for _, op := range seam.locked() {
 					if avoid[newOutPoint(&op.Hash, op.Index)] {
 						t.Errorf("locked avoided outpoint %s", op)
 					}
 				}
-				if node.sentRawTx == nil {
-					if tc.wantSent {
-						t.Fatal("no transaction sent") // e.g. a split that fell back to standard funding
-					}
-					return
+				sent := seam.sent()
+				if len(sent) == 0 && tc.wantSent {
+					t.Fatal("no transaction sent") // e.g. a split that fell back to standard funding
 				}
-				for _, in := range node.sentRawTx.TxIn {
-					if op := in.PreviousOutPoint; avoid[newOutPoint(&op.Hash, op.Index)] {
-						t.Errorf("spent avoided outpoint %s", op)
+				for _, tx := range sent {
+					for _, in := range tx.TxIn {
+						if op := in.PreviousOutPoint; avoid[newOutPoint(&op.Hash, op.Index)] {
+							t.Errorf("spent avoided outpoint %s", op)
+						}
 					}
 				}
 			})
 		}
 		// FundingCoins' last resort looks a coin up in listunspent, and must not find one.
 		t.Run(fxName+"/FundingCoins", func(t *testing.T) {
-			wallet, node, shutdown := tNewWallet()
-			defer shutdown()
-			wallet.wallet.(*rpcWallet).accountsV.Store(XCWalletAccounts{PrimaryAccount: tAcctName, UnmixedAccount: "tUnmixedAcct", TradingAccount: tTradingAcct})
-			node.unspent = fx
+			seam := newSeam(fx)
+			defer seam.shutdown()
 			for op := range avoid {
-				if coins, err := wallet.FundingCoins([]dex.Bytes{toCoinID(&op.txHash, op.vout)}); err == nil {
+				if coins, err := seam.w.FundingCoins([]dex.Bytes{toCoinID(&op.txHash, op.vout)}); err == nil {
 					t.Errorf("FundingCoins found avoided coin %s", coins[0])
 				}
 			}
 		})
+	}
+}
+
+// tSeam is an ExchangeWallet over a stubbed wallet backend, holding 15 VAR
+// spendable in the primary account, and what the wallet locked and sent.
+type tSeam struct {
+	w        *ExchangeWallet
+	locked   func() []*wire.OutPoint // every outpoint locked
+	sent     func() []*wire.MsgTx    // every transaction sent
+	shutdown func()
+}
+
+// tTestAccounts are the accounts the funding seams fund from: mixing on, so
+// the trading account is read on its own.
+var tTestAccounts = XCWalletAccounts{PrimaryAccount: tAcctName, UnmixedAccount: "tUnmixedAcct", TradingAccount: tTradingAcct}
+
+// tRPCSeam is the seam over the RPC wallet, which lists fx.
+func tRPCSeam(fx []walletjson.ListUnspentResult) *tSeam {
+	wallet, node, shutdown := tNewWallet()
+	wallet.wallet.(*rpcWallet).accountsV.Store(tTestAccounts)
+	node.unspent = fx
+	node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
+	unmixed, trading := tAcctBal("0"), tAcctBal("0")
+	unmixed.AccountName, trading.AccountName = tTestAccounts.UnmixedAccount, tTestAccounts.TradingAccount
+	node.balanceResult = &walletjson.GetBalanceResult{
+		Balances: []walletjson.GetAccountBalanceResult{tAcctBal("15"), unmixed, trading},
+	}
+	return &tSeam{w: wallet, shutdown: shutdown,
+		locked: func() []*wire.OutPoint { return node.lockedCoins },
+		sent:   func() []*wire.MsgTx { return node.sentRawTxs },
+	}
+}
+
+// tSPVSeam is the seam over the native SPV wallet, which lists fx.
+func tSPVSeam(fx []walletjson.ListUnspentResult) *tSeam {
+	nw, dcrw, shutdown := tNewNativeWallet()
+	nw.spvw.accts.Store(tTestAccounts)
+	for i := range fx {
+		dcrw.unspents = append(dcrw.unspents, &fx[i])
+	}
+	dcrw.acctNums = map[string]uint32{tTestAccounts.PrimaryAccount: 0, tTestAccounts.UnmixedAccount: 1, tTestAccounts.TradingAccount: 2}
+	dcrw.acctBals = map[uint32]wallet.Balances{0: {Spendable: 15e8, Total: 15e8}, 1: {}, 2: {}}
+	dcrw.knownAddr = &tKnownAddress{Address: tPKHAddr, acctName: tTestAccounts.PrimaryAccount}
+	return &tSeam{w: nw.ExchangeWallet, shutdown: shutdown,
+		locked: func() []*wire.OutPoint { return dcrw.lockedOutpoints },
+		sent:   func() []*wire.MsgTx { return dcrw.sentTxs },
 	}
 }
 
