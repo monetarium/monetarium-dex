@@ -105,7 +105,7 @@ premine and its own chain, so the harness mines from genesis.
   5. Distribute VAR and SKA1, then mine 2 blocks.
 - **Budget per trading wallet:**
   - 500 VAR in the DCR harness's mix of amounts (10, 18, 5, 7, 1, 15, 3, 25, …);
-  - 300 outputs of 0.01 VAR, for item 5's many-coins order;
+  - 300 outputs of 0.01 VAR, for item 5's orders;
   - SKA1 outputs larger than the largest VAR output, for items 1 and 6: four of 1000 SKA1,
     larger in coins, for a driver that reads an SKA1 amount as VAR, and one of 5 SKA1, for
     one that parses `listunspent`'s amount at SKA1's 1e18 atoms per coin: 5 SKA1 reads as
@@ -301,64 +301,74 @@ gets a real signer.
   SKA output, and the block a filter scan finds.
 - **Item 2, `TestSignVerify`.**
   - Each kind the driver builds, built through the `ExchangeWallet` methods:
-    - swap, redeem, refund;
-    - bond and bond refund;
+    - swap, redeem, refund, and the refund `Swap` signs in advance;
+    - bond, the bond refund `MakeBondTx` signs in advance, and the bond refund `RefundBond`
+      sends;
     - send, withdraw, split.
   - Each is run through Monetarium's script engine and must verify. The flags are the node's
     standard verify flags (`BaseStandardVerifyFlags` plus the agenda flags the node adds),
-    copied into the test because the node does not export them (`internal/mempool` and its
-    main package). The agenda flags are the SHA256 and treasury ones, which Monetarium's
-    params force on. Step 7's broadcast against the node catches any drift.
+    copied into the test because the node does not export them (`internal/mempool` and its main
+    package). The agenda flags are the SHA256 and treasury ones, which Monetarium's simnet
+    params force on (mainnet and testnet force only SHA256); the test runs on simnet. Step 7's
+    broadcast against the node catches any drift.
   - The stub's `signrawtransaction` signs every input as a P2PKH spend of one test key, so
     for swap, send, withdraw, split and bond the test checks the transaction the driver
     builds, not the wallet's signer; step 7 runs the wallet's.
   - The txid in the coin ID the method returns (for a split, its funding coins' txid) must
-    equal the txid of the bytes passed to `sendrawtransaction`, decoded with Monetarium's
-    `wire`.
+    equal the txid of the bytes passed to `sendrawtransaction` (for a bond, of `SignedTx`),
+    decoded with Monetarium's `wire`.
   - `v1.0.6` has no private redeem or refund. They come under this test once an upstream
     merge brings them.
 - **Item 3, `TestFeeRateCeiling`.** No path may build a transaction whose fee exceeds the
   node's ceiling, max(size × 1000, 1 000 000) atoms at its Monetarium serialized size. The
-  wallet's fee rate limit is raised, as a user may, so the high rates reach the driver:
+  wallet's fee rate limit is raised above 10 000 atoms/B, as a user may, so the high rates
+  reach the driver:
   - swaps at the market's highest `MaxFeeRate`, 600, with the maximum swap fee bump (2.0×),
     of 5 and 6 inputs (about 900 and 1100 bytes), the leftover after the contract swept past
-    what a change output would call dust;
+    what a change output would call dust at the bumped 1200 atoms/B;
   - a redeem with the maximum fee bump (2.0×) over a network rate of 10 000 atoms/B;
   - a refund at 10 000 atoms/B from its caller;
   - a send at 10 000 atoms/B;
-  - a bond refund at the network rate.
+  - a bond refund at the same network rate of 10 000 atoms/B;
+  - orders at a market `MaxFeeRate` of 601, through `FundOrder` and `FundMultiOrder`, which
+    must be refused at funding: the clamp would make their swaps pay under the market's rate.
 
   The test checks the fee of every transaction passed to `sendrawtransaction` against that
   ceiling, from the values its fixtures give the inputs. A clamp in the driver is the guard
   for both DEX wallet types, because the native SPV wallet ignores the high-fee flag. It
   has two parts. A transaction with no change output (redeem, refund, bond refund) pays at
-  most the flat 1 000 000, under the ceiling at any size, so the redeem, refund and bond
-  refund above must each pay exactly that: they keep their room to outbid other transactions
-  under SKA load. A transaction that may get change runs at most 600 atoms/B, because change
-  it calls dust stays in the fee; `TestFeeCaps` in `dex/networks/mon` checks that bound at
-  every size.
+  most the flat 1 000 000, or 600 atoms/B above 1666 bytes, under the ceiling at any size, so
+  the redeem, refund and bond refund above must each pay exactly 1 000 000: they keep their
+  room to outbid other transactions under SKA load. A batch of six redeems at the same
+  rates, about 1840 bytes, must pay at least 600 atoms/B. A redeem of 0.06 VAR at the same
+  rates must go through as well and pay exactly 1 000 000: its dust check runs at the rate
+  the capped fee pays. A transaction that may get change is built at a rate of at most
+  600 atoms/B, because change it calls dust stays in the fee; `TestFeeCaps` in
+  `dex/networks/mon` checks both bounds at every size.
 - **Item 4, `TestRedeemRefundAtMinRelay`.** A redeem and a refund at 10 atoms/B, each signed
   with a key ground for that transaction so its signature has a 33-byte R and a 32-byte S.
   Signatures are deterministic (RFC 6979), so the test grinds over a fixed key sequence and
   finds the same key on every run; a fixed key would stop giving those lengths whenever a
-  change moved the fee. Each transaction must pay at least the node's minimum fee for its
-  Monetarium serialized size. `DERSigLength` keeps one byte of slack over this signature, so
-  a size estimate one byte short still passes and two bytes short fail.
-- **Item 4, `TestDustChange`.** A swap whose change would be 6040 atoms at 10 atoms/B, its own
-  output's fee counted, must either create no change output or create change of at least the
-  node's dust threshold, 6060.
+  change moved the fee. Each transaction must pay at least 10 atoms/B of its Monetarium
+  serialized size, the node's minimum at a dynamic fee multiplier of 1. `DERSigLength` keeps
+  one byte of slack over this signature, so a size estimate one byte short still passes and two
+  bytes short fail.
+- **Item 4, `TestDustChange`.** A swap whose change output, after paying its own fee, would
+  hold 6040 atoms at 10 atoms/B, must either create no change output or create change of at
+  least the node's dust threshold, 6060.
 - **Item 5, `TestLargeSwapRefused`.**
-  - Setup: a wallet holding only 300 outputs of 0.01 VAR, and an order needing about 250 of
-    them.
-  - Pass: the driver must not broadcast any transaction (swap or split) larger than
-    37 500 bytes, VAR's share of a default block under SKA load. It may refuse the order at
-    funding or fund it within the cap; either is accepted.
-  - The test also records how many inputs coin selection picks, the question the item leaves
-    open: 242 for an order of 2.4 VAR, a swap of about 40 500 bytes.
+  - Setup: a wallet holding only 300 outputs of 0.01 VAR, and orders of 2.4 VAR (242 inputs)
+    and 2.1 VAR (211 inputs), at `MaxFeeRate` 24 with 0.1 VAR lots.
+  - Pass: the driver must not broadcast a single-contract swap or a split larger than
+    37 500 bytes, VAR's share of a default block under SKA load. A swap of several
+    contracts, one per match, can still be larger, and this test does not build one.
+  - Without the cap, coin selection picks 242 inputs for the 2.4 VAR order at `MaxFeeRate`
+    24 with 0.1 VAR lots, a swap of about 40 500 bytes: the question the item leaves open.
   - An order of 2.1 VAR, 211 inputs and about 35 300 bytes, fits and must be swapped, with
-    and without a split.
-  - `FundMultiOrder` without a split picks each order's coins outside the shared funding
-    step, and this test does not reach it.
+    and without a split; so must the largest order `MaxOrder` offers.
+  - The cap is in the coin selection for orders and for the multi-order split, so it does
+    not refuse a send, a withdraw or a bond. `FundMultiOrder` with a split, for the 2.4 VAR
+    order, must refuse it: neither its per-order selection nor its split may exceed the cap.
 - **Item 6, `TestFundingIgnoresSKA`.** The stub's SKA1 outputs have step 1's shape (four of
   1000 SKA1 and one of 5 SKA1), plus one of 1000 SKA2, all confirmed, spendable P2PKH like the
   VAR ones, and every amount funded, sent or withdrawn is above the stub's largest VAR output
@@ -527,7 +537,7 @@ At 10, swaps would pay less than the VAR traffic they compete with.
     trade tests alone do not check this: they count unconfirmed coins in balances and do not
     wait for a redeem to confirm.
   - **Measured:** blocks from broadcast to confirmation for each of them.
-- **`TestLargeSwapUnderLoad`:** the many-coins order from step 5, placed under load from a
+- **`TestLargeSwapUnderLoad`:** step 5's 2.1 VAR order, placed under load from a
   wallet whose other VAR outputs are locked. Coin selection takes the largest coins first, so
   otherwise it would fund from a few big ones.
   - **Pass:** it is refused at funding, or its swap confirms.
