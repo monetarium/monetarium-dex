@@ -28,6 +28,7 @@ import (
 	"github.com/monetarium/monetarium-node/dcrec"
 	"github.com/monetarium/monetarium-node/dcrec/secp256k1"
 	"github.com/monetarium/monetarium-node/dcrutil"
+	"github.com/monetarium/monetarium-node/hdkeychain"
 	chainjson "github.com/monetarium/monetarium-node/rpc/jsonrpc/types"
 	"github.com/monetarium/monetarium-node/txscript"
 	"github.com/monetarium/monetarium-node/txscript/sign"
@@ -1167,6 +1168,44 @@ func TestFeeRateCeiling(t *testing.T) {
 			t.Fatalf("no %d-input swap was sent", n)
 		}
 	}
+	// A swap of 1000 bytes before change, where a clamp a little above 600
+	// would leave dust change in a fee above the flat 1 000 000: 1 000 300
+	// atoms over the contract is change at 600 atoms/B, dust at 609.
+	node.signFunc = func(tx *wire.MsgTx) (*wire.MsgTx, bool, error) {
+		signFunc(tx, dexmon.P2PKHSigScriptSize)
+		tx.TxIn[0].SignatureScript = randBytes(dexmon.P2PKHSigScriptSize + 115) // pads 885 bytes to 1000
+		return tx, true, nil
+	}
+	var coins asset.Coins
+	for i := range uint32(5) {
+		v := int64(1e4)
+		if i == 0 {
+			v = contractVal + 1_000_300 - 4e4
+		}
+		coins = append(coins, newOutput(tTxHash, 200+i, uint64(v), wire.TxTreeRegular))
+		prevVal[newOutPoint(tTxHash, 200+i)] = v
+	}
+	if _, _, _, err := wallet.Swap(&asset.Swaps{
+		Inputs:    coins,
+		Contracts: []*asset.Contract{{Address: tPKHAddr.String(), Value: contractVal, SecretHash: make([]byte, 32), LockTime: 1_800_000_000}},
+		FeeRate:   600,
+		Options:   map[string]string{swapFeeBumpKey: "2.0"},
+	}); err != nil {
+		t.Fatalf("1000-byte swap: %v", err)
+	}
+	if len(node.sentRawTxs) != 1 {
+		t.Fatalf("1000-byte swap: %d transactions sent, want 1", len(node.sentRawTxs))
+	}
+	tx := node.sentRawTxs[0]
+	size := tx.SerializeSize()
+	if len(tx.TxOut) == 2 {
+		size -= tx.TxOut[1].SerializeSize() // change
+	}
+	if size != 1000 {
+		t.Fatalf("1000-byte swap is %d bytes before change", size)
+	}
+	checkSent("1000-byte swap")
+	node.signFunc = func(tx *wire.MsgTx) (*wire.MsgTx, bool, error) { return signFunc(tx, dexmon.P2PKHSigScriptSize) }
 
 	// Redeem at the 2.0 redeem fee bump over the node's highRate estimate.
 	secret := sha256.Sum256([]byte("TestFeeRateCeiling"))
@@ -1315,6 +1354,87 @@ func TestFeeRateCeiling(t *testing.T) {
 	}
 }
 
+// TestRedeemGeocodeFeeCap is item 3 for RedeemGeocode, which has no change
+// output, at 10 000 atoms/B:
+//   - one 0.06 VAR game output asks for about 2 190 000 atoms. It must pay the
+//     flat 1 000 000 instead, and its dust check must run at the rate that fee
+//     pays, so the 0.05 VAR left is kept;
+//   - ten of them, an estimate of 1722 bytes, must pay 600 atoms/B, more than
+//     the flat 1 000 000;
+//   - one of 0.0105 VAR leaves 50 000 atoms after the flat fee, which is dust.
+func TestRedeemGeocodeFeeCap(t *testing.T) {
+	code := make([]byte, 32)
+	k, err := hdkeychain.NewMaster(code, tChainParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gameAddr, err := stdaddr.NewAddressPubKeyHashEcdsaSecp256k1V0(dcrutil.Hash160(k.SerializedPubKey()), tChainParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gameScript := gameAddr.PaymentScript()
+	for _, tc := range []struct {
+		outs    int
+		val     int64 // of each game output
+		wantFee int64 // 0: a dust refusal
+	}{{1, 6e6, 1_000_000}, {10, 6e6, 600 * (15 + 10*167 + 37)}, {1, 1.05e6, 0}} {
+		t.Run(fmt.Sprintf("%d of %d atoms", tc.outs, tc.val), func(t *testing.T) {
+			wallet, node, shutdown := tNewWallet()
+			defer shutdown()
+			wallet.config().feeRateLimit = 1e6
+			node.smartFee = "10000000" // 10 000 atoms/B, in atoms/kB
+			node.newAddr = tPKHAddr
+			gameTx := wire.NewMsgTx()
+			gameTx.AddTxIn(wire.NewTxIn(wire.NewOutPoint(tTxHash, 0, wire.TxTreeRegular), 1e9, nil))
+			for range tc.outs {
+				gameTx.AddTxOut(wire.NewTxOut(tc.val, gameScript))
+			}
+			gameHex, err := gameTx.Bytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/address/" + gameAddr.String():
+					fmt.Fprintf(w, `{"address_transactions":[{"txid":%q}]}`, gameTx.TxHash())
+				case "/tx/hex/" + gameTx.TxHash().String():
+					fmt.Fprint(w, hex.EncodeToString(gameHex))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			if wallet.geocodeAPI != geocodeAPI(dex.Simnet) { // the constructor sets it
+				t.Fatalf("geocode API %q, want simnet's %q", wallet.geocodeAPI, geocodeAPI(dex.Simnet))
+			}
+			wallet.geocodeAPI = srv.URL + "/"
+
+			_, win, err := wallet.RedeemGeocode(code, "")
+			if tc.wantFee == 0 {
+				if err == nil || !strings.Contains(err.Error(), "dust") {
+					t.Fatalf("RedeemGeocode: error %v, want a dust refusal", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RedeemGeocode: %v", err)
+			}
+			if len(node.sentRawTxs) != 1 {
+				t.Fatalf("%d transactions sent, want 1", len(node.sentRawTxs))
+			}
+			tx := node.sentRawTxs[0]
+			fee := int64(tc.outs)*tc.val - tx.TxOut[0].Value
+			if fee != tc.wantFee || win != uint64(tx.TxOut[0].Value) {
+				t.Errorf("fee %d atoms for %d bytes, win %d, want %d and the output's value %d",
+					fee, tx.SerializeSize(), win, tc.wantFee, tx.TxOut[0].Value)
+			}
+			if size := tx.SerializeSize(); fee > nodeMaxFee(size) {
+				t.Errorf("fee %d atoms for %d bytes, above the node's ceiling %d", fee, size, nodeMaxFee(size))
+			}
+		})
+	}
+}
+
 // TestLargeSwapRefused is item 5: under SKA load VAR gets about 37 500 bytes
 // of a default block, and a transaction larger than that never confirms. A
 // wallet holding only 300 outputs of 0.01 VAR gets an order of 2.4 VAR, which
@@ -1324,27 +1444,60 @@ func TestFeeRateCeiling(t *testing.T) {
 // MaxOrder offers: its estimate selects coins as funding does.
 func TestLargeSwapRefused(t *testing.T) {
 	const maxSize = 37_500
+	// A P2PK output, whose input the driver sizes at 133 bytes, not 167.
+	p2pkScript, err := txscript.NewScriptBuilder().AddData(secp256k1.PrivKeyFromBytes(append(make([]byte, 31), 2)).PubKey().SerializeCompressed()).
+		AddOp(txscript.OP_CHECKSIG).Script()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cap and a shortfall refuse alike, so pin the size the margin rests on.
+	if nfo, err := dexmon.InputInfo(0, p2pkScript, nil, tChainParams); err != nil || nfo.Size() != 133 {
+		t.Fatalf("P2PK input info %+v, %v, want 133 bytes", nfo, err)
+	}
+	// fill gives the wallet nPKH P2PKH outputs, then nPK P2PK ones, 0.01 VAR
+	// each, signed at the sizes the driver estimates.
+	fill := func(node *tRPCClient, nPKH, nPK uint32) {
+		for vout := range nPKH + nPK {
+			u := tUnspent(vout, "0.01")
+			if vout >= nPKH {
+				u.ScriptPubKey = hex.EncodeToString(p2pkScript)
+			}
+			node.unspent = append(node.unspent, *u)
+		}
+		node.signFunc = func(tx *wire.MsgTx) (*wire.MsgTx, bool, error) {
+			for i, in := range tx.TxIn {
+				size := dexmon.P2PKHSigScriptSize
+				if in.PreviousOutPoint.Hash == *tTxHash && in.PreviousOutPoint.Index >= nPKH {
+					size = dexmon.P2PKSigScriptSize
+				}
+				tx.TxIn[i].SignatureScript = randBytes(size)
+			}
+			return tx, true, nil
+		}
+		node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("3")}}
+	}
 	for _, tc := range []struct {
 		val        uint64
 		split      bool
 		mustSwap   bool
 		mustRefuse bool
-	}{{2.4e8, false, false, true}, {2.4e8, true, false, true}, {2.1e8, false, true, false}, {2.1e8, true, true, false},
-		{0, false, true, false}, // 0: MaxOrder's largest order
+		pkh, pk    uint32 // the wallet's P2PKH and P2PK outputs of 0.01 VAR
+	}{{2.4e8, false, false, true, 300, 0}, {2.4e8, true, false, true, 300, 0}, {2.1e8, false, true, false, 300, 0}, {2.1e8, true, true, false, 300, 0},
+		{0, false, true, false, 300, 0}, // 0: MaxOrder's largest order
 		// At the cap's margin: 223 inputs, the most it allows, and 224, refused
 		// although that swap (about 37 496 bytes) would still fit.
-		{2.215e8, false, true, false}, {2.225e8, false, false, true}} {
-		t.Run(fmt.Sprintf("%d atoms, split=%v", tc.val, tc.split), func(t *testing.T) {
+		{2.215e8, false, true, false, 300, 0}, {2.225e8, false, false, true, 300, 0},
+		// Orders that take every output, P2PK ones among them, estimated at
+		// 37 504, 37 501 and 37 500 bytes: the first two over the cap, the last
+		// at it. Each wallet covers its order and fees with under 0.01 VAR to spare.
+		{2.225e8, false, false, true, 223, 1}, {2.235e8, false, false, true, 219, 6}, {2.465e8, false, true, false, 129, 119}} {
+		t.Run(fmt.Sprintf("%d atoms, split=%v, %d+%d inputs", tc.val, tc.split, tc.pkh, tc.pk), func(t *testing.T) {
 			val, split := tc.val, tc.split
 			wallet, node, shutdown := tNewWallet()
 			defer shutdown()
 			node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
-			node.signFunc = func(tx *wire.MsgTx) (*wire.MsgTx, bool, error) { return signFunc(tx, dexmon.P2PKHSigScriptSize) }
 			node.privWIF, _ = dcrutil.NewWIF(append(make([]byte, 31), 1), tChainParams.PrivateKeyID, dcrec.STEcdsaSecp256k1)
-			for vout := range uint32(300) {
-				node.unspent = append(node.unspent, *tUnspent(vout, "0.01"))
-			}
-			node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("3")}}
+			fill(node, tc.pkh, tc.pk)
 			if val == 0 {
 				est, err := wallet.MaxOrder(&asset.MaxOrderForm{LotSize: tLotSize, FeeSuggestion: feeSuggestion, MaxFeeRate: tDCR.MaxFeeRate})
 				if err != nil {
@@ -1378,27 +1531,37 @@ func TestLargeSwapRefused(t *testing.T) {
 			}
 		})
 	}
-	// FundMultiOrder: per-order selection cannot fund 2.4 VAR under the cap,
-	// so it falls back to a multi-order split, which is capped as well.
-	t.Run("FundMultiOrder split", func(t *testing.T) {
-		wallet, node, shutdown := tNewWallet()
-		defer shutdown()
-		node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
-		node.signFunc = func(tx *wire.MsgTx) (*wire.MsgTx, bool, error) { return signFunc(tx, dexmon.P2PKHSigScriptSize) }
-		for vout := range uint32(300) {
-			node.unspent = append(node.unspent, *tUnspent(vout, "0.01"))
-		}
-		node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("3")}}
-		_, _, _, err := wallet.FundMultiOrder(&asset.MultiOrder{Values: []*asset.MultiOrderValue{{Value: 2.4e8, MaxSwapCount: 2.4e8 / tLotSize}},
-			MaxFeeRate: tDCR.MaxFeeRate, FeeSuggestion: feeSuggestion, Options: map[string]string{multiSplitKey: "true"}}, 0)
-		if err == nil {
-			t.Error("FundMultiOrder funded the 2.4 VAR order") // only more than the cap's inputs cover it
-		}
-		t.Logf("FundMultiOrder: error %v", err)
-		for _, tx := range node.sentRawTxs {
-			if size := tx.SerializeSize(); size > maxSize {
-				t.Errorf("sent a transaction of %d bytes with %d inputs, above %d", size, len(tx.TxIn), maxSize)
+	// FundMultiOrder: per-order selection cannot fund more than 223 inputs
+	// under the cap, so it falls back to a multi-order split, which is capped
+	// as well. At its margin, 2.22 VAR takes 223 inputs and is split; 2.225 VAR
+	// takes 224, an estimate of 37 501 bytes, and is refused. An order that
+	// takes all of 134 P2PKH and 113 P2PK outputs is estimated at 37 500 bytes,
+	// at the cap, and is split.
+	for _, tc := range []struct {
+		val      uint64
+		mustFund bool
+		pkh, pk  uint32
+	}{{2.4e8, false, 300, 0}, {2.22e8, true, 300, 0}, {2.225e8, false, 300, 0}, {2.46e8, true, 134, 113}} {
+		t.Run(fmt.Sprintf("FundMultiOrder split of %d atoms, %d+%d inputs", tc.val, tc.pkh, tc.pk), func(t *testing.T) {
+			wallet, node, shutdown := tNewWallet()
+			defer shutdown()
+			node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
+			fill(node, tc.pkh, tc.pk)
+			_, _, _, err := wallet.FundMultiOrder(&asset.MultiOrder{Values: []*asset.MultiOrderValue{{Value: tc.val, MaxSwapCount: tc.val / tLotSize}},
+				MaxFeeRate: tDCR.MaxFeeRate, FeeSuggestion: feeSuggestion, Options: map[string]string{multiSplitKey: "true"}}, 0)
+			t.Logf("FundMultiOrder: error %v", err)
+
+			if tc.mustFund && (err != nil || len(node.sentRawTxs) == 0) {
+				t.Errorf("FundMultiOrder did not split for the order: %v", err)
 			}
-		}
-	})
+			if !tc.mustFund && err == nil {
+				t.Error("FundMultiOrder funded the order")
+			}
+			for _, tx := range node.sentRawTxs {
+				if size := tx.SerializeSize(); size > maxSize {
+					t.Errorf("sent a transaction of %d bytes with %d inputs, above %d", size, len(tx.TxIn), maxSize)
+				}
+			}
+		})
+	}
 }

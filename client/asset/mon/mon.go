@@ -647,6 +647,7 @@ type ExchangeWallet struct {
 	oracleFees    map[uint64]feeStamped // conf target => fee rate
 	oracleFailing bool
 	feeOracleURL  string // %d takes the number of blocks; "" if the network has no oracle
+	geocodeAPI    string // the explorer API RedeemGeocode reads game transactions from
 
 	handleTipMtx sync.Mutex
 	currentTip   atomic.Value // *block
@@ -852,6 +853,7 @@ func unconnectedWallet(cfg *asset.WalletConfig, dcrCfg *walletConfig, chainParam
 		externalTxCache:     make(map[chainhash.Hash]*externalTx),
 		oracleFees:          make(map[uint64]feeStamped),
 		feeOracleURL:        feeOracleURL(network),
+		geocodeAPI:          geocodeAPI(network),
 		mempoolRedeems:      make(map[[32]byte]*mempoolRedeem),
 		vspFilepath:         vspFilepath,
 		walletType:          cfg.Type,
@@ -7336,7 +7338,7 @@ func (dcr *ExchangeWallet) RedeemGeocode(code []byte, msg string) (dex.Bytes, ui
 		return nil, 0, fmt.Errorf("error generating address: %w", err)
 	}
 
-	gameTxs, err := getDcrdataTxs(dcr.ctx, gameAddr.String(), dcr.network)
+	gameTxs, err := getDcrdataTxs(dcr.ctx, dcr.geocodeAPI, gameAddr.String())
 	if err != nil {
 		return nil, 0, fmt.Errorf("error getting tx from dcrdata: %w", err)
 	}
@@ -7414,15 +7416,18 @@ func (dcr *ExchangeWallet) RedeemGeocode(code []byte, msg string) (dex.Bytes, ui
 	return toCoinID(redeemHash, 0), win, nil
 }
 
-func getDcrdataTxs(ctx context.Context, addr string, net dex.Network) (txs []*wire.MsgTx, _ error) {
-	apiRoot := "https://dcrdata.decred.org/api/"
+// geocodeAPI is the API root getDcrdataTxs reads from on net.
+func geocodeAPI(net dex.Network) string {
 	switch net {
 	case dex.Testnet:
-		apiRoot = "https://testnet.dcrdata.org/api/"
+		return "https://testnet.dcrdata.org/api/"
 	case dex.Simnet:
-		apiRoot = "http://127.0.0.1:17779/api/"
+		return "http://127.0.0.1:17779/api/"
 	}
+	return "https://dcrdata.decred.org/api/"
+}
 
+func getDcrdataTxs(ctx context.Context, apiRoot, addr string) (txs []*wire.MsgTx, _ error) {
 	var resp struct {
 		Txs []struct {
 			TxID string `json:"txid"`
