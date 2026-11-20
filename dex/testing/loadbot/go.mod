@@ -142,6 +142,31 @@ require (
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
+	github.com/monetarium/monetarium-node/addrmgr v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/blockchain/stake v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/blockchain/standalone v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/chaincfg v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/chaincfg/chainhash v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/cointype v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/connmgr v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/container/lru v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/crypto/blake256 v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/crypto/rand v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/crypto/ripemd160 v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/database v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrec v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrec/edwards v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrec/secp256k1 v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrjson v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/dcrutil v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/gcs v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/hdkeychain v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/mixing v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/rpc/jsonrpc/types v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/rpcclient v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/txscript v1.3.14 // indirect
+	github.com/monetarium/monetarium-node/wire v1.3.14 // indirect
+	github.com/monetarium/monetarium-wallet v1.3.15-0.20261115125850-42aa5102b0a2 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
