@@ -755,6 +755,44 @@ func TestUnspentOutput(t *testing.T) {
 	}
 }
 
+// TestSwapConfirmationsSPVCredit drives UnspentOutput's confirmation count
+// through SwapConfirmations, its only reader. The swap output is a wallet credit
+// here, which a P2SH contract output is not today, so live swaps take the
+// GetTransaction path instead; the count must agree with it either way.
+func TestSwapConfirmationsSPVCredit(t *testing.T) {
+	nw, dcrw, shutdown := tNewNativeWallet()
+	defer shutdown()
+
+	const vout = 1
+	dcrw.txDetails = &udb.TxDetails{
+		TxRecord: udb.TxRecord{MsgTx: wire.MsgTx{TxOut: []*wire.TxOut{{}, {}}}},
+		Credits:  []udb.CreditRecord{{Index: vout}},
+	}
+	dcrw.listTxs = []walletjson.ListTransactionsResult{{Vout: vout, Address: tPKHAddr.String()}}
+	coinID := toCoinID(&chainhash.Hash{0x1}, vout)
+
+	dcrw.tip.height = 100
+	for _, tt := range []struct {
+		name   string
+		height int32
+		want   uint32
+	}{
+		{"unmined", -1, 0},
+		{"mined at tip", 100, 1},
+		{"mined 5 deep", 96, 5},
+		{"mined above tip", 101, 1},
+	} {
+		dcrw.txDetails.Block.Height = tt.height
+		confs, spent, err := nw.SwapConfirmations(tCtx, coinID, nil, time.Now())
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if spent || confs != tt.want {
+			t.Fatalf("%s: wanted %d confirmations unspent, got %d, spent = %v", tt.name, tt.want, confs, spent)
+		}
+	}
+}
+
 func TestGetBlockHeader(t *testing.T) {
 	w, dcrw := tNewSpvWallet()
 

@@ -691,11 +691,20 @@ func (w *spvWallet) UnspentOutput(ctx context.Context, txHash *chainhash.Hash, i
 		return nil, asset.CoinNotFoundError
 	}
 
+	// Counted as in GetTransaction.
+	var confs uint32
+	if txd.Block.Height != -1 {
+		confs = 1 // mined above a tip that has not caught up yet
+		if tipHeight >= txd.Block.Height {
+			confs = uint32(tipHeight - txd.Block.Height + 1)
+		}
+	}
+
 	return &TxOutput{
 		TxOut:         txd.MsgTx.TxOut[index],
 		Tree:          tree,
 		Addresses:     []string{addrStr},
-		Confirmations: uint32(txd.Block.Height - tipHeight + 1),
+		Confirmations: confs,
 	}, nil
 }
 
