@@ -307,7 +307,11 @@ gets a real signer.
   - Each is run through Monetarium's script engine and must verify. The flags are the node's
     standard verify flags (`BaseStandardVerifyFlags` plus the agenda flags the node adds),
     copied into the test because the node does not export them (`internal/mempool` and its
-    main package). Step 7's broadcast against the node catches any drift.
+    main package). The agenda flags are the SHA256 and treasury ones, which Monetarium's
+    params force on. Step 7's broadcast against the node catches any drift.
+  - The stub's `signrawtransaction` signs every input as a P2PKH spend of one test key, so
+    for swap, send, withdraw, split and bond the test checks the transaction the driver
+    builds, not the wallet's signer; step 7 runs the wallet's.
   - The txid in the coin ID the method returns (for a split, its funding coins' txid) must
     equal the txid of the bytes passed to `sendrawtransaction`, decoded with Monetarium's
     `wire`.

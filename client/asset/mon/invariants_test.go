@@ -3,6 +3,7 @@ package mon
 // Tests for the items of docs/var-port/invariants.md, over the RPC wallet.
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -18,8 +19,11 @@ import (
 	"github.com/monetarium/monetarium-node/blockchain/stake"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/dcrec"
+	"github.com/monetarium/monetarium-node/dcrec/secp256k1"
 	"github.com/monetarium/monetarium-node/dcrutil"
 	chainjson "github.com/monetarium/monetarium-node/rpc/jsonrpc/types"
+	"github.com/monetarium/monetarium-node/txscript"
+	"github.com/monetarium/monetarium-node/txscript/sign"
 	"github.com/monetarium/monetarium-node/txscript/stdaddr"
 	"github.com/monetarium/monetarium-node/wire"
 	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
@@ -403,4 +407,216 @@ func testFundingAvoids(t *testing.T, fixtures map[string][]walletjson.ListUnspen
 			}
 		})
 	}
+}
+
+// verifyFlags are the node's standard script flags: mempool's
+// BaseStandardVerifyFlags plus the SHA256 and treasury flags its
+// standardScriptVerifyFlags adds once those agendas are active, which
+// Monetarium's simnet params force from the start (mainnet and testnet force
+// only SHA256); these tests run on simnet. Copied, as the node exports
+// neither; step 7's broadcast against the node catches drift.
+const verifyFlags = txscript.ScriptDiscourageUpgradableNops | txscript.ScriptVerifyCleanStack |
+	txscript.ScriptVerifyCheckLockTimeVerify | txscript.ScriptVerifyCheckSequenceVerify |
+	txscript.ScriptVerifySHA256 | txscript.ScriptVerifyTreasury
+
+// tSigner is a wallet key for the stub's signrawtransaction, which signs every
+// input as a P2PKH spend of it, as the wallet does for the funding outputs.
+type tSigner struct {
+	priv     []byte
+	addr     stdaddr.Address
+	pkScript []byte
+}
+
+func newTSigner(t *testing.T) *tSigner {
+	t.Helper()
+	priv := secp256k1.PrivKeyFromBytes(append(make([]byte, 31), 7))
+	addr, err := stdaddr.NewAddressPubKeyHashEcdsaSecp256k1V0(stdaddr.Hash160(priv.PubKey().SerializeCompressed()), tChainParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, pkScript := addr.PaymentScript()
+	return &tSigner{priv.Serialize(), addr, pkScript}
+}
+
+func (s *tSigner) sign(tx *wire.MsgTx) (*wire.MsgTx, bool, error) {
+	for i := range tx.TxIn {
+		sigScript, err := sign.SignatureScript(tx, i, s.pkScript, txscript.SigHashAll, s.priv, dcrec.STEcdsaSecp256k1, true)
+		if err != nil {
+			return nil, false, err
+		}
+		tx.TxIn[i].SignatureScript = sigScript
+	}
+	return tx, true, nil
+}
+
+// verifyTx runs every input of tx through Monetarium's script engine.
+// prevScripts maps an outpoint to the script it pays; any other input spends
+// a P2PKH output of the signer.
+func verifyTx(t *testing.T, kind string, tx *wire.MsgTx, s *tSigner, prevScripts map[outPoint][]byte) {
+	t.Helper()
+	for i, in := range tx.TxIn {
+		pkScript, ok := prevScripts[newOutPoint(&in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)]
+		if !ok {
+			pkScript = s.pkScript
+		}
+		// Every spend here starts with its signature; any valid hash type verifies,
+		// so check that it is SigHashAll.
+		if sigScript := in.SignatureScript; len(sigScript) == 0 || int(sigScript[0]) >= len(sigScript) ||
+			txscript.SigHashType(sigScript[sigScript[0]]) != txscript.SigHashAll {
+			t.Errorf("%s input %d: signature is not SigHashAll", kind, i)
+		}
+		vm, err := txscript.NewEngine(pkScript, tx, i, verifyFlags, 0, nil)
+		if err == nil {
+			err = vm.Execute()
+		}
+		if err != nil {
+			t.Errorf("%s input %d does not verify: %v", kind, i, err)
+		}
+	}
+}
+
+// TestSignVerify is item 2: each kind of transaction the driver builds, built
+// through the ExchangeWallet methods, verifies under Monetarium's script
+// engine, and the txid in the coin ID the method returns is the txid of the
+// bytes it sent. Redeem, refund and bond refund are signed by the driver;
+// the other kinds by the stub's signer, standing in for the wallet's.
+func TestSignVerify(t *testing.T) {
+	s := newTSigner(t)
+	wallet, node, shutdown := tNewWallet()
+	defer shutdown()
+	node.signFunc = s.sign
+	node.newAddr, node.changeAddr = s.addr, s.addr
+	var err error
+	node.privWIF, err = dcrutil.NewWIF(s.priv, tChainParams.PrivateKeyID, dcrec.STEcdsaSecp256k1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, amt := range []string{"4", "5", "6"} {
+		u := tUnspent(uint32(i), amt)
+		u.Address, u.ScriptPubKey = s.addr.String(), hex.EncodeToString(s.pkScript)
+		node.unspent = append(node.unspent, *u)
+	}
+	node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("15")}}
+	prevScripts := make(map[outPoint][]byte)
+
+	// sent checks that the method sent exactly one transaction, that it
+	// verifies, and that coinID names it.
+	sent := func(kind string, coinID []byte) *wire.MsgTx {
+		t.Helper()
+		if len(node.sentRawTxs) != 1 {
+			t.Fatalf("%s: %d transactions sent, want 1", kind, len(node.sentRawTxs))
+		}
+		tx := node.sentRawTxs[0]
+		node.sentRawTxs = nil
+		raw, err := tx.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := msgTxFromBytes(raw) // the txid of the bytes, by Monetarium's wire
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h, _, err := decodeCoinID(coinID); err != nil || *h != decoded.TxHash() {
+			t.Errorf("%s: coin ID names %v, sent %s (%v)", kind, h, decoded.TxHash(), err)
+		}
+		verifyTx(t, kind, decoded, s, prevScripts)
+		return decoded
+	}
+
+	// Swap, and the refund it signs in advance.
+	secret := sha256.Sum256([]byte("TestSignVerify"))
+	secretHash := sha256.Sum256(secret[:])
+	const swapVal = 3e8
+	receipts, _, _, err := wallet.Swap(&asset.Swaps{
+		Inputs: asset.Coins{newOutput(tTxHash, 0, 4e8, wire.TxTreeRegular)},
+		Contracts: []*asset.Contract{{Address: s.addr.String(), Value: swapVal, SecretHash: secretHash[:],
+			LockTime: uint64(time.Now().Add(time.Hour).Unix())}},
+		FeeRate: feeSuggestion,
+	})
+	if err != nil {
+		t.Fatalf("Swap: %v", err)
+	}
+	contract, contractCoin := receipts[0].Contract(), receipts[0].Coin()
+	sent("swap", contractCoin.ID())
+	p2sh, _ := stdaddr.NewAddressScriptHashV0(contract, tChainParams)
+	_, contractScript := p2sh.PaymentScript()
+	contractHash, contractVout, _ := decodeCoinID(contractCoin.ID())
+	prevScripts[newOutPoint(contractHash, contractVout)] = contractScript
+	signedRefund, err := msgTxFromBytes(receipts[0].SignedRefund())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyTx(t, "swap's signed refund", signedRefund, s, prevScripts)
+
+	// Redeem the contract Swap built.
+	_, redeemCoin, _, err := wallet.Redeem(&asset.RedeemForm{Redemptions: []*asset.Redemption{{
+		Spends: &asset.AuditInfo{Coin: contractCoin, Contract: contract, Recipient: s.addr.String(),
+			Expiration: time.Now().Add(time.Hour)},
+		Secret: secret[:],
+	}}})
+	if err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+	sent("redeem", redeemCoin.ID())
+
+	// Refund it.
+	tipHash, _ := node.getBestBlock()
+	node.txOutRes[newOutPoint(contractHash, contractVout)] = &chainjson.GetTxOutResult{
+		Confirmations: 1, Value: dcrutil.Amount(swapVal).ToCoin(), BestBlock: tipHash.String(),
+		ScriptPubKey: chainjson.ScriptPubKeyResult{Hex: hex.EncodeToString(contractScript)},
+	}
+	refundID, err := wallet.Refund(contractCoin.ID(), contract, feeSuggestion)
+	if err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	sent("refund", refundID)
+
+	// Bond, its pre-signed refund, and a bond refund through RefundBond.
+	bondKey := dcrsecp256k1.PrivKeyFromBytes(append(make([]byte, 31), 9))
+	const bondAmt = 2e8
+	bond, _, err := wallet.MakeBondTx(0, bondAmt, feeSuggestion, time.Now().Add(12*time.Hour), bondKey, make([]byte, 32))
+	if err != nil {
+		t.Fatalf("MakeBondTx: %v", err)
+	}
+	bondTx, err := msgTxFromBytes(bond.SignedTx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, _, _ := decodeCoinID(bond.CoinID); *h != bondTx.TxHash() {
+		t.Errorf("bond: coin ID names %s, signed %s", h, bondTx.TxHash())
+	}
+	verifyTx(t, "bond", bondTx, s, prevScripts)
+	bondHash, bondVout, _ := decodeCoinID(bond.CoinID)
+	bondP2SH, _ := stdaddr.NewAddressScriptHashV0(bond.Data, tChainParams)
+	_, prevScripts[newOutPoint(bondHash, bondVout)] = bondP2SH.PaymentScript()
+	bondRefund, err := msgTxFromBytes(bond.RedeemTx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyTx(t, "bond's signed refund", bondRefund, s, prevScripts)
+	refundCoin, err := wallet.RefundBond(tCtx, 0, bond.CoinID, bond.Data, bondAmt, bondKey)
+	if err != nil {
+		t.Fatalf("RefundBond: %v", err)
+	}
+	sent("bond refund", refundCoin.ID())
+
+	// Send, withdraw, split.
+	sendCoin, err := wallet.Send(s.addr.String(), 1e8, feeSuggestion)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	sent("send", sendCoin.ID())
+	withdrawCoin, err := wallet.Withdraw(s.addr.String(), 1e8, feeSuggestion)
+	if err != nil {
+		t.Fatalf("Withdraw: %v", err)
+	}
+	sent("withdraw", withdrawCoin.ID())
+	wallet.config().useSplitTx = true
+	const orderVal = 7e8 // no single output covers it, so the split must be sent
+	coins, _, _, err := wallet.FundOrder(&asset.Order{Version: version, Value: orderVal, MaxSwapCount: orderVal / tLotSize,
+		MaxFeeRate: tDCR.MaxFeeRate, FeeSuggestion: feeSuggestion, Options: map[string]string{"swapsplit": "true"}})
+	if err != nil {
+		t.Fatalf("FundOrder split: %v", err)
+	}
+	sent("split", coins[0].ID())
 }
