@@ -585,9 +585,12 @@ func TestTreasuryPolicyConversion(t *testing.T) {
 }
 
 // TestNoDecredText checks the package's user-visible strings (config option
-// text, returned errors, log lines) for Decred's names and dcrwallet's ports.
-// The literals allowed below are endpoints the port keeps for now: the mixing
-// server, the VSP list and the dcrdata lookup, which are outside the PoC.
+// text, returned errors, log lines) for Decred's names, dcrwallet's ports and
+// the DCR simnet harness's ports (alpha 19560, beta 19570, vspd 19591, dcrdata
+// 17779), which the VAR harness does not use. The literals allowed below are
+// endpoints the port keeps for now: the mixing server, the VSP list, the
+// dcrdata lookup and the simnet VSP and geocode explorer, which are outside
+// the PoC.
 func TestNoDecredText(t *testing.T) {
 	allowed := map[string]bool{
 		`"mix.decred.org:5760"`:               true,
@@ -596,8 +599,10 @@ func TestNoDecredText(t *testing.T) {
 		`"error getting tx from dcrdata: %w"`: true,
 		`"https://dcrdata.decred.org/api/"`:   true,
 		`"https://testnet.dcrdata.org/api/"`:  true,
+		`"http://127.0.0.1:19591"`:            true,
+		`"http://127.0.0.1:17779/api/"`:       true,
 	}
-	bad := regexp.MustCompile(`\b(DCR|dcr|Decred|decred|dcrwallet|Dcrwallet|dcrd|dcrdata|9110|19110|19557)\b`)
+	bad := regexp.MustCompile(`\b(DCR|dcr|Decred|decred|dcrwallet|Dcrwallet|dcrd|dcrdata|9110|19110|19557|19560|19570|19591|17779)\b`)
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
