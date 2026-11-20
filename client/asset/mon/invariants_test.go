@@ -33,6 +33,7 @@ import (
 	"github.com/monetarium/monetarium-node/wire"
 	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
 	"github.com/monetarium/monetarium-wallet/wallet"
+	"github.com/monetarium/monetarium-wallet/wallet/udb"
 )
 
 // TestFeeRateUnits is item 7, for an RPC wallet in RPC sync mode:
@@ -600,14 +601,20 @@ func newTSigner(t *testing.T) *tSigner {
 }
 
 func (s *tSigner) sign(tx *wire.MsgTx) (*wire.MsgTx, bool, error) {
+	return tx, true, s.signHashType(tx, txscript.SigHashAll)
+}
+
+// signHashType signs in place with the hash type the caller asked for, as
+// the SPV wallet library does.
+func (s *tSigner) signHashType(tx *wire.MsgTx, hashType txscript.SigHashType) error {
 	for i := range tx.TxIn {
-		sigScript, err := sign.SignatureScript(tx, i, s.pkScript, txscript.SigHashAll, s.priv, dcrec.STEcdsaSecp256k1, true)
+		sigScript, err := sign.SignatureScript(tx, i, s.pkScript, hashType, s.priv, dcrec.STEcdsaSecp256k1, true)
 		if err != nil {
-			return nil, false, err
+			return err
 		}
 		tx.TxIn[i].SignatureScript = sigScript
 	}
-	return tx, true, nil
+	return nil
 }
 
 // verifyTx runs every input of tx through Monetarium's script engine.
@@ -642,9 +649,38 @@ func verifyTx(t *testing.T, kind string, tx *wire.MsgTx, s *tSigner, prevScripts
 // bytes it sent. Redeem, refund and bond refund are signed by the driver;
 // the other kinds by the stub's signer, standing in for the wallet's.
 func TestSignVerify(t *testing.T) {
-	s := newTSigner(t)
+	testSignVerify(t, tRPCSignSeam)
+}
+
+// TestSPVSignVerify is TestSignVerify over the native SPV wallet.
+func TestSPVSignVerify(t *testing.T) {
+	testSignVerify(t, tSPVSignSeam)
+}
+
+// tSignSeam is an ExchangeWallet whose wallet signs for s and lists 4, 5 and
+// 6 VAR paying s, 15 VAR spendable.
+type tSignSeam struct {
+	w        *ExchangeWallet
+	sent     func() []*wire.MsgTx // every transaction sent, cleared by reset
+	reset    func()
+	shutdown func()
+	// unspentContract makes the wallet find the contract output vout of tx,
+	// paying contractScript, unspent and confirmed.
+	unspentContract func(tx *wire.MsgTx, vout uint32, contractScript []byte)
+}
+
+func tSignUnspents(s *tSigner) []walletjson.ListUnspentResult {
+	var unspents []walletjson.ListUnspentResult
+	for i, amt := range []string{"4", "5", "6"} {
+		u := tUnspent(uint32(i), amt)
+		u.Address, u.ScriptPubKey = s.addr.String(), hex.EncodeToString(s.pkScript)
+		unspents = append(unspents, *u)
+	}
+	return unspents
+}
+
+func tRPCSignSeam(t *testing.T, s *tSigner) *tSignSeam {
 	wallet, node, shutdown := tNewWallet()
-	defer shutdown()
 	node.signFunc = s.sign
 	node.newAddr, node.changeAddr = s.addr, s.addr
 	var err error
@@ -652,23 +688,62 @@ func TestSignVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, amt := range []string{"4", "5", "6"} {
-		u := tUnspent(uint32(i), amt)
-		u.Address, u.ScriptPubKey = s.addr.String(), hex.EncodeToString(s.pkScript)
-		node.unspent = append(node.unspent, *u)
-	}
+	node.unspent = tSignUnspents(s)
 	node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("15")}}
+	return &tSignSeam{w: wallet, shutdown: shutdown,
+		sent:  func() []*wire.MsgTx { return node.sentRawTxs },
+		reset: func() { node.sentRawTxs = nil },
+		unspentContract: func(tx *wire.MsgTx, vout uint32, contractScript []byte) {
+			tipHash, _ := node.getBestBlock()
+			txHash := tx.TxHash()
+			node.txOutRes[newOutPoint(&txHash, vout)] = &chainjson.GetTxOutResult{
+				Confirmations: 1, Value: dcrutil.Amount(tx.TxOut[vout].Value).ToCoin(), BestBlock: tipHash.String(),
+				ScriptPubKey: chainjson.ScriptPubKeyResult{Hex: hex.EncodeToString(contractScript)},
+			}
+		},
+	}
+}
+
+func tSPVSignSeam(t *testing.T, s *tSigner) *tSignSeam {
+	nw, dcrw, shutdown := tNewNativeWallet()
+	dcrw.signFunc = s.signHashType
+	dcrw.extAddr, dcrw.intAddr = s.addr, s.addr
+	dcrw.priv = secp256k1.PrivKeyFromBytes(s.priv)
+	nw.spvw.accts.Store(XCWalletAccounts{PrimaryAccount: tAcctName}) // tUnspent's account
+	dcrw.knownAddr = &tKnownAddress{Address: s.addr, acctName: tAcctName}
+	for _, u := range tSignUnspents(s) {
+		dcrw.unspents = append(dcrw.unspents, &u)
+	}
+	dcrw.acctBal = wallet.Balances{Spendable: 15e8, Total: 15e8}
+	return &tSignSeam{w: nw.ExchangeWallet, shutdown: shutdown,
+		sent:  func() []*wire.MsgTx { return dcrw.sentTxs },
+		reset: func() { dcrw.sentTxs = nil },
+		unspentContract: func(tx *wire.MsgTx, vout uint32, _ []byte) {
+			_, tipHeight := dcrw.MainChainTip(tCtx)
+			dcrw.txDetails = &udb.TxDetails{TxRecord: udb.TxRecord{MsgTx: *tx},
+				Block: udb.BlockMeta{Block: udb.Block{Height: tipHeight}}, Credits: []udb.CreditRecord{{Index: vout}}}
+			dcrw.listTxs = []walletjson.ListTransactionsResult{{Vout: vout, Address: s.addr.String()}}
+		},
+	}
+}
+
+func testSignVerify(t *testing.T, newSeam func(*testing.T, *tSigner) *tSignSeam) {
+	s := newTSigner(t)
+	seam := newSeam(t, s)
+	defer seam.shutdown()
+	wallet := seam.w
+	var err error
 	prevScripts := make(map[outPoint][]byte)
 
 	// sent checks that the method sent exactly one transaction, that it
 	// verifies, and that coinID names it.
 	sent := func(kind string, coinID []byte) *wire.MsgTx {
 		t.Helper()
-		if len(node.sentRawTxs) != 1 {
-			t.Fatalf("%s: %d transactions sent, want 1", kind, len(node.sentRawTxs))
+		if len(seam.sent()) != 1 {
+			t.Fatalf("%s: %d transactions sent, want 1", kind, len(seam.sent()))
 		}
-		tx := node.sentRawTxs[0]
-		node.sentRawTxs = nil
+		tx := seam.sent()[0]
+		seam.reset()
 		raw, err := tx.Bytes()
 		if err != nil {
 			t.Fatal(err)
@@ -698,7 +773,7 @@ func TestSignVerify(t *testing.T) {
 		t.Fatalf("Swap: %v", err)
 	}
 	contract, contractCoin := receipts[0].Contract(), receipts[0].Coin()
-	sent("swap", contractCoin.ID())
+	swapTx := sent("swap", contractCoin.ID())
 	p2sh, _ := stdaddr.NewAddressScriptHashV0(contract, tChainParams)
 	_, contractScript := p2sh.PaymentScript()
 	contractHash, contractVout, _ := decodeCoinID(contractCoin.ID())
@@ -721,11 +796,7 @@ func TestSignVerify(t *testing.T) {
 	sent("redeem", redeemCoin.ID())
 
 	// Refund it.
-	tipHash, _ := node.getBestBlock()
-	node.txOutRes[newOutPoint(contractHash, contractVout)] = &chainjson.GetTxOutResult{
-		Confirmations: 1, Value: dcrutil.Amount(swapVal).ToCoin(), BestBlock: tipHash.String(),
-		ScriptPubKey: chainjson.ScriptPubKeyResult{Hex: hex.EncodeToString(contractScript)},
-	}
+	seam.unspentContract(swapTx, contractVout, contractScript)
 	refundID, err := wallet.Refund(contractCoin.ID(), contract, feeSuggestion)
 	if err != nil {
 		t.Fatalf("Refund: %v", err)
