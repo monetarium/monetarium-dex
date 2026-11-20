@@ -415,18 +415,23 @@ signer, so item 2 holds here too.
   repeats step 5's item 6 test over the SPV seam. The second covers the native wallet's
   account transfer. The first runs with step 5's SKA outputs and amounts, the second with
   step 5's SKA outputs only (it takes no amounts); neither may select or lock an SKA outpoint.
-- **Item 7, `TestFeeOracle`.** The oracle fetch becomes injectable; today its URL is hard-coded.
+- **Item 7, `TestFeeOracle`.** The oracle URL becomes a wallet field the test can set; it was
+  hard-coded.
   - The VAR driver's oracle is `monetarium.online/insight/api/utils/estimatefee` on mainnet
-    and the testnet explorer's same route on testnet. That the testnet route answers is
-    checked in this step. Simnet has no oracle.
-  - With a stubbed fetch, all four cases must give a rate of at least 10 atoms/B, both in
-    `FeeRate` and in the fee a send pays:
+    and the testnet explorer's same route on testnet. The testnet route answered
+    `{"2":0.0001}` when queried by hand on 2026-11-20. Simnet has no oracle.
+  - The test points the fetch at a local stub server and runs four cases:
     - an unreachable source;
     - a Decred-shaped answer below 10 atoms/B (`{"2":0.00009}`);
     - a valid answer;
     - no oracle (simnet).
+  - An answer must give a `FeeRate` of at least 10 atoms/B. An unreachable source or no oracle
+    must give 0, which core reads as no rate and replaces with the server's.
+  - In all four cases, a send given `FeeRate`'s answer must pay at least 10 atoms/B. So must a
+    send given a suggestion, or a configured fallback rate, below 10.
 - **Item 2:** `TestSignVerify` repeated over the SPV seam.
-- **Item 8, `TestSPVStakerFeeNotSelected`.** Step 5's item 8 test over the SPV seam.
+- **Item 8, `TestSPVStakerFeeNotSelected`.** Step 5's item 8 test over the SPV seam. The
+  native wallet's account transfer must not sweep a staker-fee output either.
 
 **Done when** these tests pass.
 

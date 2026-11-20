@@ -10,6 +10,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -33,6 +35,7 @@ import (
 	"github.com/monetarium/monetarium-node/wire"
 	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
 	"github.com/monetarium/monetarium-wallet/wallet"
+	"github.com/monetarium/monetarium-wallet/wallet/udb"
 )
 
 // TestFeeRateUnits is item 7, for an RPC wallet in RPC sync mode:
@@ -71,6 +74,100 @@ func TestFeeRateUnits(t *testing.T) {
 		if got := wallet.FeeRate(); got != 0 {
 			t.Errorf("estimatesmartfee %q: FeeRate = %d atoms/B, want 0", bad, got)
 		}
+	}
+}
+
+// TestFeeOracle is item 7 for the native SPV wallet, which has no
+// estimatesmartfee and asks the network's explorer instead: Monetarium's on
+// mainnet and testnet, none on simnet. An oracle answer below the node's 10
+// atoms/B minimum, such as a Decred-shaped one, is raised to it. With the
+// oracle unreachable or absent FeeRate gives no rate (0), and core falls back
+// to the server's. In every case a send, given FeeRate's answer as core
+// gives it, pays at least 10 atoms/B, as it does for a low suggestion or a
+// low configured fallback rate.
+func TestFeeOracle(t *testing.T) {
+	for net, want := range map[dex.Network]string{
+		dex.Mainnet: "https://monetarium.online/insight/api/utils/estimatefee?nbBlocks=%d",
+		dex.Testnet: "https://testnet.monetarium.online/insight/api/utils/estimatefee?nbBlocks=%d",
+		dex.Simnet:  "",
+	} {
+		if got := feeOracleURL(net); got != want {
+			t.Errorf("%s oracle %q, want %q", net, got, want)
+		}
+	}
+
+	// Every rate is raised to 10, so a lower limit is refused.
+	for limit, ok := range map[float64]bool{0.00009: false, 0.0001: true} { // coins/kB: 9 and 10 atoms/B
+		if _, err := getExchangeWalletCfg(&walletConfig{FeeRateLimit: limit}, tLogger); (err == nil) != ok {
+			t.Errorf("fee rate limit %v coins/kB: error %v, want refused = %v", limit, err, !ok)
+		}
+	}
+
+	var calls int
+	oracle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		q := r.URL.Query() // answered as insight does: keyed by the block count asked for
+		fmt.Fprintf(w, `{%q:%s}`, q.Get("nbBlocks"), q.Get("rate"))
+	}))
+	defer oracle.Close()
+
+	for _, tt := range []struct {
+		name       string
+		url        string // "" is no oracle
+		suggestion uint64 // the send's rate if not FeeRate's
+		fallback   uint64
+		wantRate   uint64 // FeeRate
+		wantCalls  int
+	}{
+		{name: "unreachable", url: "http://127.0.0.1:0/?nbBlocks=%d"}, // port 0 is never listening
+		{name: "below 10 atoms/B", url: oracle.URL + `/?rate=0.00009&nbBlocks=%d`, wantRate: 10, wantCalls: 1},
+		{name: "valid", url: oracle.URL + `/?rate=0.0002&nbBlocks=%d`, wantRate: 20, wantCalls: 1},
+		{name: "no oracle"},
+		{name: "low suggestion", suggestion: 5},
+		{name: "low fallback", fallback: 5},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTSigner(t)
+			seam := tSPVSignSeam(t, s) // fresh: the wallet caches oracle answers and failures
+			defer seam.shutdown()
+			seam.w.feeOracleURL = tt.url
+			cfg := seam.w.config()
+			cfg.apiFeeFallback = true
+			if tt.fallback != 0 {
+				cfg.fallbackFeeRate = tt.fallback
+			}
+			calls = 0
+			rate := seam.w.FeeRate()
+			if rate != tt.wantRate {
+				t.Errorf("FeeRate = %d atoms/B, want %d", rate, tt.wantRate)
+			}
+			if calls != tt.wantCalls {
+				t.Errorf("oracle asked %d times, want %d", calls, tt.wantCalls)
+			}
+			if tt.url == "" && seam.w.oracleFailing {
+				t.Error("no oracle, but the wallet tried one") // a URL left unset is not a failing oracle
+			}
+			if tt.suggestion != 0 {
+				rate = tt.suggestion
+			}
+			if _, err := seam.w.Send(s.addr.String(), 1e8, rate); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			if len(seam.sent()) != 1 {
+				t.Fatalf("%d transactions sent, want 1", len(seam.sent()))
+			}
+			tx := seam.sent()[0]
+			fee := int64(0)
+			for _, in := range tx.TxIn {
+				fee += []int64{4e8, 5e8, 6e8}[in.PreviousOutPoint.Index] // tSignUnspents' amounts
+			}
+			for _, out := range tx.TxOut {
+				fee -= out.Value
+			}
+			if size := int64(tx.SerializeSize()); fee < int64(dexmon.MinRelayFeeRate)*size {
+				t.Errorf("send pays %d atoms for %d bytes, below %d atoms/B", fee, size, dexmon.MinRelayFeeRate)
+			}
+		})
 	}
 }
 
@@ -306,23 +403,66 @@ func skaFundingFixtures() (map[string][]walletjson.ListUnspentResult, map[outPoi
 // block without the owner's key, as an augmented staker-fee input. The wallet
 // lists it once matured, spendable, with an OP_SSGEN-tagged P2PKH script.
 func TestStakerFeeNotSelected(t *testing.T) {
-	var unspents []walletjson.ListUnspentResult
-	for i, amt := range []string{"4", "5", "6"} {
-		unspents = append(unspents, *tUnspent(uint32(i), amt))
+	testStakerFeeNotSelected(t, tRPCSeam)
+}
+
+// TestSPVStakerFeeNotSelected is TestStakerFeeNotSelected over the native SPV
+// wallet, whose account transfer must not sweep a staker-fee output either.
+func TestSPVStakerFeeNotSelected(t *testing.T) {
+	testStakerFeeNotSelected(t, tSPVSeam)
+
+	nw, dcrw, shutdown := tNewNativeWallet()
+	defer shutdown()
+	nw.spvw.setAccounts(true)
+	fee := tStakerFeeUnspent(t, 20, "1000", 100_000)
+	for _, u := range []*walletjson.ListUnspentResult{tUnspent(0, "4"), fee} {
+		u.Account = mixedAccountName
+		dcrw.unspents = append(dcrw.unspents, u)
 	}
+	if err := nw.transferAccount(nw.ctx, defaultAccountName, mixedAccountName); err != nil {
+		t.Fatalf("transferAccount: %v", err)
+	}
+	if len(dcrw.sentTxs) != 1 {
+		t.Fatalf("%d transactions sent, want 1", len(dcrw.sentTxs))
+	}
+	for _, in := range dcrw.sentTxs[0].TxIn {
+		if in.PreviousOutPoint.Index != 0 {
+			t.Errorf("transferAccount spent %s, want only the VAR output", in.PreviousOutPoint)
+		}
+	}
+}
+
+// tStakerFeeUnspent is a matured staker-fee output paying tPKHAddr, as the
+// wallet lists it.
+func tStakerFeeUnspent(t *testing.T, vout uint32, amt string, confs int64) *walletjson.ListUnspentResult {
+	t.Helper()
+	u := tUnspent(vout, amt)
+	u.TxType, u.Tree, u.Confirmations = int(stake.TxTypeSSFee), wire.TxTreeStake, confs
+	u.ScriptPubKey = hex.EncodeToString(tStakePayout(t))
+	return u
+}
+
+// tStakePayout is the OP_SSGEN-tagged P2PKH script of tPKHAddr.
+func tStakePayout(t *testing.T) []byte {
+	t.Helper()
 	payout, err := stake.ConsolidationAddrToPkScript(tPKHAddr.(*stdaddr.AddressPubKeyHashEcdsaSecp256k1V0).Hash160()[:])
 	if err != nil {
 		t.Fatal(err)
+	}
+	return payout
+}
+
+func testStakerFeeNotSelected(t *testing.T, newSeam func([]walletjson.ListUnspentResult) *tSeam) {
+	var unspents []walletjson.ListUnspentResult
+	for i, amt := range []string{"4", "5", "6"} {
+		unspents = append(unspents, *tUnspent(uint32(i), amt))
 	}
 	avoid := make(map[outPoint]bool)
 	for vout, o := range map[uint32]struct {
 		amt   string
 		confs int64
 	}{20: {"1000", 16}, 21: {"3", 100_000}} { // just matured on simnet, and old
-		u := tUnspent(vout, o.amt)
-		u.TxType, u.Tree, u.Confirmations = int(stake.TxTypeSSFee), wire.TxTreeStake, o.confs
-		u.ScriptPubKey = hex.EncodeToString(payout)
-		unspents = append(unspents, *u)
+		unspents = append(unspents, *tStakerFeeUnspent(t, vout, o.amt, o.confs))
 		avoid[newOutPoint(tTxHash, vout)] = true
 	}
 	trading := slices.Clone(unspents)
@@ -331,22 +471,19 @@ func TestStakerFeeNotSelected(t *testing.T) {
 			trading[i].Account = tTradingAcct // the trading account is read on its own
 		}
 	}
-	testFundingAvoids(t, tRPCSeam, map[string][]walletjson.ListUnspentResult{"staker fee": unspents,
+	testFundingAvoids(t, newSeam, map[string][]walletjson.ListUnspentResult{"staker fee": unspents,
 		"staker fee in the trading account": trading}, avoid)
 
 	// Only the staker-fee type goes: the owner's vote and revocation outputs still fund an order
 	// that the 1 VAR regular output cannot.
 	for _, txType := range []stake.TxType{stake.TxTypeSSGen, stake.TxTypeSSRtx} {
-		wallet, node, shutdown := tNewWallet()
 		reward := tUnspent(1, "10")
 		reward.TxType, reward.Tree, reward.Confirmations = int(txType), wire.TxTreeStake, 1000
-		reward.ScriptPubKey = hex.EncodeToString(payout)
-		node.unspent = []walletjson.ListUnspentResult{*tUnspent(0, "1"), *reward}
-		node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
-		node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("11")}}
-		_, _, _, err := wallet.FundOrder(&asset.Order{Version: version, Value: 5e8, MaxSwapCount: 5e8 / tLotSize,
+		reward.ScriptPubKey = hex.EncodeToString(tStakePayout(t))
+		seam := newSeam([]walletjson.ListUnspentResult{*tUnspent(0, "1"), *reward})
+		_, _, _, err := seam.w.FundOrder(&asset.Order{Version: version, Value: 5e8, MaxSwapCount: 5e8 / tLotSize,
 			MaxFeeRate: tDCR.MaxFeeRate, FeeSuggestion: feeSuggestion})
-		shutdown()
+		seam.shutdown()
 		if err != nil {
 			t.Errorf("tx type %v: FundOrder: %v", txType, err)
 		}
@@ -560,14 +697,20 @@ func newTSigner(t *testing.T) *tSigner {
 }
 
 func (s *tSigner) sign(tx *wire.MsgTx) (*wire.MsgTx, bool, error) {
+	return tx, true, s.signHashType(tx, txscript.SigHashAll)
+}
+
+// signHashType signs in place with the hash type the caller asked for, as
+// the SPV wallet library does.
+func (s *tSigner) signHashType(tx *wire.MsgTx, hashType txscript.SigHashType) error {
 	for i := range tx.TxIn {
-		sigScript, err := sign.SignatureScript(tx, i, s.pkScript, txscript.SigHashAll, s.priv, dcrec.STEcdsaSecp256k1, true)
+		sigScript, err := sign.SignatureScript(tx, i, s.pkScript, hashType, s.priv, dcrec.STEcdsaSecp256k1, true)
 		if err != nil {
-			return nil, false, err
+			return err
 		}
 		tx.TxIn[i].SignatureScript = sigScript
 	}
-	return tx, true, nil
+	return nil
 }
 
 // verifyTx runs every input of tx through Monetarium's script engine.
@@ -602,9 +745,38 @@ func verifyTx(t *testing.T, kind string, tx *wire.MsgTx, s *tSigner, prevScripts
 // bytes it sent. Redeem, refund and bond refund are signed by the driver;
 // the other kinds by the stub's signer, standing in for the wallet's.
 func TestSignVerify(t *testing.T) {
-	s := newTSigner(t)
+	testSignVerify(t, tRPCSignSeam)
+}
+
+// TestSPVSignVerify is TestSignVerify over the native SPV wallet.
+func TestSPVSignVerify(t *testing.T) {
+	testSignVerify(t, tSPVSignSeam)
+}
+
+// tSignSeam is an ExchangeWallet whose wallet signs for s and lists 4, 5 and
+// 6 VAR paying s, 15 VAR spendable.
+type tSignSeam struct {
+	w        *ExchangeWallet
+	sent     func() []*wire.MsgTx // every transaction sent, cleared by reset
+	reset    func()
+	shutdown func()
+	// unspentContract makes the wallet find the contract output vout of tx,
+	// paying contractScript, unspent and confirmed.
+	unspentContract func(tx *wire.MsgTx, vout uint32, contractScript []byte)
+}
+
+func tSignUnspents(s *tSigner) []walletjson.ListUnspentResult {
+	var unspents []walletjson.ListUnspentResult
+	for i, amt := range []string{"4", "5", "6"} {
+		u := tUnspent(uint32(i), amt)
+		u.Address, u.ScriptPubKey = s.addr.String(), hex.EncodeToString(s.pkScript)
+		unspents = append(unspents, *u)
+	}
+	return unspents
+}
+
+func tRPCSignSeam(t *testing.T, s *tSigner) *tSignSeam {
 	wallet, node, shutdown := tNewWallet()
-	defer shutdown()
 	node.signFunc = s.sign
 	node.newAddr, node.changeAddr = s.addr, s.addr
 	var err error
@@ -612,23 +784,62 @@ func TestSignVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, amt := range []string{"4", "5", "6"} {
-		u := tUnspent(uint32(i), amt)
-		u.Address, u.ScriptPubKey = s.addr.String(), hex.EncodeToString(s.pkScript)
-		node.unspent = append(node.unspent, *u)
-	}
+	node.unspent = tSignUnspents(s)
 	node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("15")}}
+	return &tSignSeam{w: wallet, shutdown: shutdown,
+		sent:  func() []*wire.MsgTx { return node.sentRawTxs },
+		reset: func() { node.sentRawTxs = nil },
+		unspentContract: func(tx *wire.MsgTx, vout uint32, contractScript []byte) {
+			tipHash, _ := node.getBestBlock()
+			txHash := tx.TxHash()
+			node.txOutRes[newOutPoint(&txHash, vout)] = &chainjson.GetTxOutResult{
+				Confirmations: 1, Value: dcrutil.Amount(tx.TxOut[vout].Value).ToCoin(), BestBlock: tipHash.String(),
+				ScriptPubKey: chainjson.ScriptPubKeyResult{Hex: hex.EncodeToString(contractScript)},
+			}
+		},
+	}
+}
+
+func tSPVSignSeam(t *testing.T, s *tSigner) *tSignSeam {
+	nw, dcrw, shutdown := tNewNativeWallet()
+	dcrw.signFunc = s.signHashType
+	dcrw.extAddr, dcrw.intAddr = s.addr, s.addr
+	dcrw.priv = secp256k1.PrivKeyFromBytes(s.priv)
+	nw.spvw.accts.Store(XCWalletAccounts{PrimaryAccount: tAcctName}) // tUnspent's account
+	dcrw.knownAddr = &tKnownAddress{Address: s.addr, acctName: tAcctName}
+	for _, u := range tSignUnspents(s) {
+		dcrw.unspents = append(dcrw.unspents, &u)
+	}
+	dcrw.acctBal = wallet.Balances{Spendable: 15e8, Total: 15e8}
+	return &tSignSeam{w: nw.ExchangeWallet, shutdown: shutdown,
+		sent:  func() []*wire.MsgTx { return dcrw.sentTxs },
+		reset: func() { dcrw.sentTxs = nil },
+		unspentContract: func(tx *wire.MsgTx, vout uint32, _ []byte) {
+			_, tipHeight := dcrw.MainChainTip(tCtx)
+			dcrw.txDetails = &udb.TxDetails{TxRecord: udb.TxRecord{MsgTx: *tx},
+				Block: udb.BlockMeta{Block: udb.Block{Height: tipHeight}}, Credits: []udb.CreditRecord{{Index: vout}}}
+			dcrw.listTxs = []walletjson.ListTransactionsResult{{Vout: vout, Address: s.addr.String()}}
+		},
+	}
+}
+
+func testSignVerify(t *testing.T, newSeam func(*testing.T, *tSigner) *tSignSeam) {
+	s := newTSigner(t)
+	seam := newSeam(t, s)
+	defer seam.shutdown()
+	wallet := seam.w
+	var err error
 	prevScripts := make(map[outPoint][]byte)
 
 	// sent checks that the method sent exactly one transaction, that it
 	// verifies, and that coinID names it.
 	sent := func(kind string, coinID []byte) *wire.MsgTx {
 		t.Helper()
-		if len(node.sentRawTxs) != 1 {
-			t.Fatalf("%s: %d transactions sent, want 1", kind, len(node.sentRawTxs))
+		if len(seam.sent()) != 1 {
+			t.Fatalf("%s: %d transactions sent, want 1", kind, len(seam.sent()))
 		}
-		tx := node.sentRawTxs[0]
-		node.sentRawTxs = nil
+		tx := seam.sent()[0]
+		seam.reset()
 		raw, err := tx.Bytes()
 		if err != nil {
 			t.Fatal(err)
@@ -658,7 +869,7 @@ func TestSignVerify(t *testing.T) {
 		t.Fatalf("Swap: %v", err)
 	}
 	contract, contractCoin := receipts[0].Contract(), receipts[0].Coin()
-	sent("swap", contractCoin.ID())
+	swapTx := sent("swap", contractCoin.ID())
 	p2sh, _ := stdaddr.NewAddressScriptHashV0(contract, tChainParams)
 	_, contractScript := p2sh.PaymentScript()
 	contractHash, contractVout, _ := decodeCoinID(contractCoin.ID())
@@ -681,11 +892,7 @@ func TestSignVerify(t *testing.T) {
 	sent("redeem", redeemCoin.ID())
 
 	// Refund it.
-	tipHash, _ := node.getBestBlock()
-	node.txOutRes[newOutPoint(contractHash, contractVout)] = &chainjson.GetTxOutResult{
-		Confirmations: 1, Value: dcrutil.Amount(swapVal).ToCoin(), BestBlock: tipHash.String(),
-		ScriptPubKey: chainjson.ScriptPubKeyResult{Hex: hex.EncodeToString(contractScript)},
-	}
+	seam.unspentContract(swapTx, contractVout, contractScript)
 	refundID, err := wallet.Refund(contractCoin.ID(), contract, feeSuggestion)
 	if err != nil {
 		t.Fatalf("Refund: %v", err)

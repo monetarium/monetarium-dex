@@ -646,6 +646,7 @@ type ExchangeWallet struct {
 	oracleFeesMtx sync.Mutex
 	oracleFees    map[uint64]feeStamped // conf target => fee rate
 	oracleFailing bool
+	feeOracleURL  string // %d takes the number of blocks; "" if the network has no oracle
 
 	handleTipMtx sync.Mutex
 	currentTip   atomic.Value // *block
@@ -798,13 +799,14 @@ func getExchangeWalletCfg(dcrCfg *walletConfig, logger dex.Logger) (*exchangeWal
 	logger.Tracef("Fallback fees set at %d atoms/byte", fallbackFeesPerByte)
 
 	// If set in the user config, the fee rate limit will be in units of DCR/KB.
-	// Convert to atoms/byte & error if value is smaller than smallest unit.
+	// Convert to atoms/byte & error if value is below the node's minimum, which
+	// every fee rate is raised to.
 	feesLimitPerByte := uint64(defaultFeeRateLimit)
 	if dcrCfg.FeeRateLimit > 0 {
 		feesLimitPerByte = toAtoms(dcrCfg.FeeRateLimit / 1000)
-		if feesLimitPerByte == 0 {
-			return nil, fmt.Errorf("Fee rate limit is smaller than smallest unit: %v",
-				dcrCfg.FeeRateLimit)
+		if feesLimitPerByte < dexmon.MinRelayFeeRate {
+			return nil, fmt.Errorf("Fee rate limit %v is below the minimum of %d atoms/byte",
+				dcrCfg.FeeRateLimit, dexmon.MinRelayFeeRate)
 		}
 	}
 	logger.Tracef("Fees rate limit set at %d atoms/byte", feesLimitPerByte)
@@ -849,6 +851,7 @@ func unconnectedWallet(cfg *asset.WalletConfig, dcrCfg *walletConfig, chainParam
 		findRedemptionQueue: make(map[outPoint]*findRedemptionReq),
 		externalTxCache:     make(map[chainhash.Hash]*externalTx),
 		oracleFees:          make(map[uint64]feeStamped),
+		feeOracleURL:        feeOracleURL(network),
 		mempoolRedeems:      make(map[[32]byte]*mempoolRedeem),
 		vspFilepath:         vspFilepath,
 		walletType:          cfg.Type,
@@ -1322,8 +1325,12 @@ func (dcr *ExchangeWallet) feeRate(confTarget uint64) (uint64, error) {
 		return 0, errors.New("fee rate oracle is in a temporary failing state")
 	}
 
+	if dcr.feeOracleURL == "" {
+		return 0, errors.New("no fee rate oracle on this network")
+	}
+
 	dcr.log.Tracef("Retrieving fee rate from external fee oracle for %d target blocks", confTarget)
-	dcrPerKB, err := fetchFeeFromOracle(dcr.ctx, dcr.network, confTarget)
+	dcrPerKB, err := fetchFeeFromOracle(dcr.ctx, fmt.Sprintf(dcr.feeOracleURL, confTarget), confTarget)
 	if err != nil {
 		// Just log it and return zero. If we return an error, it's just logged
 		// anyway, and we want to meter these logs.
@@ -1346,6 +1353,8 @@ func (dcr *ExchangeWallet) feeRate(confTarget uint64) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// A rate below the node's minimum would not relay.
+	atomsPerByte = max(atomsPerByte, dexmon.MinRelayFeeRate)
 	if atomsPerByte > cfg.feeRateLimit {
 		return 0, fmt.Errorf("fee rate from external API greater than fee rate limit: %v > %v",
 			atomsPerByte, cfg.feeRateLimit)
@@ -1369,14 +1378,20 @@ func dcrPerKBToAtomsPerByte(dcrPerkB float64) (uint64, error) {
 	return uint64(dex.IntDivUp(int64(atomsPerKB), 1000)), nil
 }
 
-// fetchFeeFromOracle gets the fee rate from the external API.
-func fetchFeeFromOracle(ctx context.Context, net dex.Network, nb uint64) (float64, error) {
-	var uri string
-	if net == dex.Testnet {
-		uri = fmt.Sprintf("https://testnet.dcrdata.org/insight/api/utils/estimatefee?nbBlocks=%d", nb)
-	} else { // mainnet and simnet
-		uri = fmt.Sprintf("https://explorer.dcrdata.org/insight/api/utils/estimatefee?nbBlocks=%d", nb)
+// feeOracleURL is the explorer route that estimates the fee rate on net, in
+// coins/kB, or "" on simnet, which has no explorer.
+func feeOracleURL(net dex.Network) string {
+	switch net {
+	case dex.Mainnet:
+		return "https://monetarium.online/insight/api/utils/estimatefee?nbBlocks=%d"
+	case dex.Testnet:
+		return "https://testnet.monetarium.online/insight/api/utils/estimatefee?nbBlocks=%d"
 	}
+	return ""
+}
+
+// fetchFeeFromOracle gets the fee rate for nb blocks from the external API at uri.
+func fetchFeeFromOracle(ctx context.Context, uri string, nb uint64) (float64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	var resp map[uint64]float64
@@ -1414,12 +1429,13 @@ func (dcr *ExchangeWallet) targetFeeRateWithFallback(confTarget, feeSuggestion u
 func (dcr *ExchangeWallet) feeRateWithFallback(feeSuggestion uint64) uint64 {
 	cfg := dcr.config()
 
+	// Neither may be below the node's minimum, which would not relay.
 	if feeSuggestion > 0 && feeSuggestion < cfg.feeRateLimit {
 		dcr.log.Tracef("Using caller's suggestion for fee rate, %d", feeSuggestion)
-		return feeSuggestion
+		return max(feeSuggestion, dexmon.MinRelayFeeRate)
 	}
 	dcr.log.Warnf("No usable fee rate suggestion. Using fallback of %d", cfg.fallbackFeeRate)
-	return cfg.fallbackFeeRate
+	return max(cfg.fallbackFeeRate, dexmon.MinRelayFeeRate)
 }
 
 type amount uint64

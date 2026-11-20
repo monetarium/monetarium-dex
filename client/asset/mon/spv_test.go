@@ -59,6 +59,7 @@ type tDcrWallet struct {
 	intAddr              stdaddr.Address
 	intAddrErr           error
 	sigErrs              []wallet.SignatureError
+	signFunc             func(*wire.MsgTx, txscript.SigHashType) error // signs in place if set
 	signIncomplete       bool
 	signTxErr            error
 	publishTxErr         error
@@ -169,6 +170,11 @@ func (w *tDcrWallet) SignTransaction(ctx context.Context, tx *wire.MsgTx, hashTy
 	additionalPrevScripts map[wire.OutPoint][]byte, additionalKeysByAddress map[string]*dcrutil.WIF,
 	p2shRedeemScriptsByAddress map[string][]byte) ([]wallet.SignatureError, bool, error) {
 
+	if w.signFunc != nil {
+		if err := w.signFunc(tx, hashType); err != nil {
+			return nil, false, err
+		}
+	}
 	return w.sigErrs, len(w.sigErrs) == 0 && !w.signIncomplete, w.signTxErr
 }
 
@@ -245,7 +251,11 @@ func (w *tDcrWallet) Unlock(ctx context.Context, passphrase []byte, timeout <-ch
 }
 
 func (w *tDcrWallet) LoadPrivateKey(ctx context.Context, addr stdaddr.Address) (key *secp256k1.PrivateKey, zero func(), err error) {
-	return w.priv, func() {}, w.privKeyErr
+	if w.priv == nil {
+		return nil, func() {}, w.privKeyErr
+	}
+	// A fresh copy each call, as the library's: callers zero it after use.
+	return secp256k1.PrivKeyFromBytes(w.priv.Serialize()), func() {}, w.privKeyErr
 }
 
 func (w *tDcrWallet) TxDetails(ctx context.Context, txHash *chainhash.Hash) (*udb.TxDetails, error) {

@@ -157,7 +157,7 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
   is off by 10^8 or lands at 1 atom/B, below min relay. In SPV mode DCRDEX asks Decred's
   dcrdata for a rate (client [`dcr.go:1363-1384`][dex:client/asset/dcr/dcr.go:1363-1384]).
   `monetarium.online/insight/api/utils/estimatefee` serves the same route in the same format
-  (`{"2":0.0001}`, checked 2026-11-17), so SPV mode needs only the URL.
+  (`{"2":0.0001}`, checked 2026-11-17).
 - **Exposed by:** the server's and client's rates compared with `estimatesmartfee`; an SPV
   wallet with the fee source unreachable, and with a Decred-shaped rate below 10 atoms/B.
 
