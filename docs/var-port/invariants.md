@@ -6,10 +6,11 @@ guards. Items 1-10 belong to the proof of concept (PoC); item 11 belongs to the 
 
 This file states what must be true and, per item, the setup that exposes a violation. How each
 test runs (network or unit test, parameters, pass condition) is the PoC plan's job,
-[`plan.md`](plan.md).
+[`plan.md`](plan.md). [Where the VAR code departs from `dcr`](#where-the-var-code-departs-from-dcr)
+lists where the VAR code departs from `dcr` on purpose, and the item or choice behind each.
 
 The claims come from reading the code on both sides; the points marked (checked) were
-confirmed by hand. Nothing was built; the only thing run was the node mempool test in item 8.
+confirmed by hand.
 Versions read, each citation linking to the file at that commit:
 
 - NODE = `monetarium-node` `e1b5d170` (main)
@@ -252,6 +253,29 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 None that blocks the PoC tests; item 5's lock-time choice follows its test. Settled on
 2026-11-17 by a test: the mempool rejects other parties' staker-fee respends, so the race in
 item 8 is in-block only.
+
+## Where the VAR code departs from `dcr`
+
+The VAR packages started as copies of the DCR ones. Each row is a place where the VAR copy
+behaves differently on purpose, so an upstream merge that ports a DCR change keeps the VAR
+behaviour. A row tied to an item takes its reason from that item; a row marked "choice" is not
+an invariant and carries its own reason. A change that adds such a departure adds its row.
+
+| VAR code | Departs from `dcr` by | Why | Guarded by |
+| --- | --- | --- | --- |
+| `dex/networks/mon` size constants, `redeemP2SHTxSize` | Monetarium's input (+1 byte) and output (+1 byte) overheads, computed here instead of taken from the wallet's `txsizes`; the redeem size counts the sig-script varint. Dust, lot and bond minimums follow. | item 4 | `TestVarSizes`, `TestDustThreshold`, `TestMinLotBondSize`, `TestReservePerLot`, `TestIsDust`, `TestRedeemRefundAtMinRelay`, `TestDustChange` |
+| `dex/networks/mon` `MaxFee`, `MaxFeeRate`, `MaxNoChangeFee`; client redeem, refund, bond refund, `RedeemGeocode`, `signTxAndAddChange`, `FundOrder`, `FundMultiOrder`; the `checkVarMaxFeeRate` calls in `server/dex/dex.go` | A transaction with no change pays at most `MaxNoChangeFee`; one that may get change is clamped to 600 atoms/B; a market or order above 600 is refused. Why 600 and not 1000: the comment on `varMaxFeeRate`. | item 3 | `TestFeeCaps`, `TestFeeRateCeiling`, `TestVarMaxFeeRateBound` |
+| `server/dex` `varMinFeeRate`; client `getExchangeWalletCfg`, `feeRateWithFallback` | A `maxFeeRate` or `feeratelimit` below 10 atoms/B is refused, and fee suggestions are raised to 10. | choice: 10 atoms/B is the node's minimum relay fee (#13, #21); `server/dex` keeps its own copy of 10, see the comment on `varMinFeeRate` | `TestVarMaxFeeRateBound`, `TestFeeOracle` |
+| `rpcWallet.EstimateSmartFeeRate`, `ExchangeWallet.feeRate`; server `Backend.FeeRate` | `estimatesmartfee` read as atoms/kB from an integer string, rounded up, floor 10. | item 7 | `TestFeeRateUnits` (client and server) |
+| SPV `feeOracleURL`, `fetchFeeFromOracle`, `feeRate` | Monetarium's explorer on mainnet and testnet; none on simnet, so `FeeRate` is 0 there and core uses the server's rate; an answer below 10 is raised to 10. | item 7 (#21) | `TestFeeOracle` |
+| `coinStrToAtoms` and every amount the wallet reports (selection, balances, `FundingCoins`, `parseUTXOs`, transfers, history fees) | Amounts parsed exactly from plain decimal strings, at most 8 decimals, within VAR's supply; `dcr` converts floats. | choice: the wallet reports amounts as strings so SKA's 18 decimals survive (#14) | `TestCoinStrToAtoms`, `TestParseUTXOsAtoms`, `TestBalanceAtoms`, `TestFundingCoinsAtoms`, `TestListSinceBlockFee`, `TestSPVBalanceStrings`, `TestFundsMixingStatsAtoms`, `TestTransferAccountAtoms` |
+| `rpcWallet.Unspents`, `spvWallet.Unspents` | Only VAR outputs, and no staker-fee outputs. | items 6, 8 | `TestFundingIgnoresSKA`, `TestSPVFundingIgnoresSKA`, `TestTransferAccountIgnoresSKA`, `TestStakerFeeNotSelected`, `TestSPVStakerFeeNotSelected` |
+| client `AuditContract` | A contract output that is not VAR, or has no value, is refused. | item 1 | `TestAuditContractSKAOutput` |
+| server `Backend.transaction` (`Contract`, `FundingCoin`, `Redemption`), `ParseBondTx` | An output that is not VAR is refused. | item 1 | `TestContractSKAOutput`, `TestFundingCoinSKAOutput`, `TestRedemptionSKA`, `TestParseBondTxSKA` |
+| server `Backend.utxo` | A staker-fee transaction's output is refused as a funding coin, at any age. | item 8 | `TestFundingCoinStakerFee` |
+| `swapTxTooLarge`, `fundMultiSplitTx`, `MaxTxSize` | Funding never selects inputs that would put a split, or a swap with up to three outputs, above 37 500 bytes; send, withdraw and bonds stay uncapped in size. | item 5 | `TestLargeSwapRefused`, `TestMaxTxSize` |
+| `spvWallet.UnspentOutput` | Confirmations counted from the tip; `dcr`'s operands are swapped and wrap. | choice: a bug fix not upstream (#20) | `TestSwapConfirmationsSPVCredit` |
+| `spvWallet.SignRawTransaction` | A transaction the wallet reports as incompletely signed is refused. | choice: the node's wallet reports it, Decred's library does not (#14) | `TestSPVSignIncomplete` |
 
 ## DEX references against upstream master
 
