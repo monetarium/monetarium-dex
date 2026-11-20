@@ -1498,6 +1498,10 @@ func (w *spvWallet) cleanBlockCache() {
 	}
 }
 
+// simnetSPVPeer is the VAR harness's alpha node (dex/testing/var/harness.sh,
+// ALPHA_NODE_PORT); upstream's 19560 is the DCR harness's.
+const simnetSPVPeer = "localhost:19660"
+
 func (w *spvWallet) newSpvSyncer() *spv.Syncer {
 	w.spvMtx.Lock()
 	defer w.spvMtx.Unlock()
@@ -1506,7 +1510,7 @@ func (w *spvWallet) newSpvSyncer() *spv.Syncer {
 	var connectPeers []string
 	switch w.chainParams.Net {
 	case wire.SimNet:
-		connectPeers = []string{"localhost:19560"}
+		connectPeers = []string{simnetSPVPeer}
 	}
 	addr := &net.TCPAddr{IP: net.ParseIP("::1"), Port: 0}
 	amgr := addrmgr.New(w.dir)

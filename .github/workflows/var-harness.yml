@@ -21,7 +21,9 @@ jobs:
   harness:
     name: VAR harness
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Above the timed steps' 50 min plus the untimed setup and build, so a hung
+    # step still leaves the log dump.
+    timeout-minutes: 65
     env:
       # The pins in plan.md, Versions. Every node submodule is tagged v1.3.14 on the
       # root tag's commit, so go install builds the release's code.
@@ -78,6 +80,12 @@ jobs:
       - name: check.sh
         timeout-minutes: 10
         run: dex/testing/var/check.sh
+
+      # docs/var-port/plan.md, step 1a item 4: step 7's driver tests. -timeout
+      # leaves room in the step for a cold compile (setup-go caches nothing).
+      - name: Driver harness tests
+        timeout-minutes: 20
+        run: go test -count=1 -timeout 14m -tags harness ./client/asset/mon/...
 
       - name: Dump tmux windows
         if: failure()
