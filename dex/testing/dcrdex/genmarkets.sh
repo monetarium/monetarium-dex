@@ -9,6 +9,11 @@ if [ "${EPOCH_DURATION}" -lt 1000 ]; then
     exit 1
 fi
 
+# A running VAR harness gets the VAR markets only, with no DCR harness needed.
+if ~/dextest/var/harness-ctl/alpha getblockchaininfo &> /dev/null; then
+    exec "$(dirname "$0")/genmarkets-var.sh"
+fi
+
 # run with NODERELAY=1 to use a node relay for the bitcoin node.
 BTC_NODERELAY_ID=""
 DCR_NODERELAY_ID=""
