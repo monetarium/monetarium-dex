@@ -13,10 +13,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
+	"math"
 	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -30,6 +33,7 @@ import (
 	dcrsecp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/chaincfg/chainhash"
+	"github.com/monetarium/monetarium-node/cointype"
 	"github.com/monetarium/monetarium-node/dcrec"
 	"github.com/monetarium/monetarium-node/dcrec/secp256k1"
 	"github.com/monetarium/monetarium-node/dcrutil"
@@ -37,6 +41,7 @@ import (
 	"github.com/monetarium/monetarium-node/txscript/sign"
 	"github.com/monetarium/monetarium-node/txscript/stdaddr"
 	"github.com/monetarium/monetarium-node/wire"
+	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
 	"github.com/monetarium/monetarium-wallet/wallet"
 )
 
@@ -153,17 +158,21 @@ func sentAccepted(t *testing.T, w *ExchangeWallet, kind string, raw []byte) {
 type tWallet struct {
 	name string
 	w    *ExchangeWallet
+	nw   *NativeWallet // nil for an RPC wallet
 	cm   *dex.ConnectionMaster
 }
 
 // tRPCWallet connects to the harness's trading1 wallet.
-func tRPCWallet(t *testing.T) *tWallet {
+func tRPCWallet(t *testing.T) *tWallet { t.Helper(); return tRPCWalletNamed(t, "rpc", "trading1") }
+
+// tRPCWalletNamed connects to the harness wallet dir (trading1, spvwallet).
+func tRPCWalletNamed(t *testing.T, name, dir string) *tWallet {
 	t.Helper()
-	settings, err := config.Parse(filepath.Join(harnessDir(), "trading1", "trading1.conf"))
+	settings, err := config.Parse(filepath.Join(harnessDir(), dir, dir+".conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return connectWallet(t, "rpc", &asset.WalletConfig{Settings: settings, DataDir: t.TempDir()})
+	return connectWallet(t, name, &asset.WalletConfig{Settings: settings, DataDir: t.TempDir()})
 }
 
 // tNativeWallet creates a native SPV wallet from a new seed and funds it from
@@ -213,7 +222,8 @@ func connectWallet(t *testing.T, name string, cfg *asset.WalletConfig) *tWallet 
 	}
 	t.Cleanup(cm.Disconnect)
 	w, is := backend.(*ExchangeWallet)
-	if nw, isNative := backend.(*NativeWallet); isNative {
+	nw, isNative := backend.(*NativeWallet)
+	if isNative {
 		w, is = nw.ExchangeWallet, true
 	}
 	if !is {
@@ -222,7 +232,7 @@ func connectWallet(t *testing.T, name string, cfg *asset.WalletConfig) *tWallet 
 	if err := w.Unlock(walletPass); err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
-	return &tWallet{name, w, cm}
+	return &tWallet{name, w, nw, cm}
 }
 
 func waitFor(t *testing.T, what string, d time.Duration, f func() bool) {
@@ -233,6 +243,23 @@ func waitFor(t *testing.T, what string, d time.Duration, f func() bool) {
 		}
 	}
 	t.Fatalf("timeout: %s", what)
+}
+
+// minedAt is the height of the block on alpha's chain holding txid, 0 while it
+// is unmined.
+func minedAt(t *testing.T, txid string) int64 {
+	t.Helper()
+	var res struct {
+		Confirmations int64 `json:"confirmations"`
+		BlockHeight   int64 `json:"blockheight"`
+	}
+	if err := json.Unmarshal([]byte(mustCtl(t, "alpha_node", "getrawtransaction", txid, "1")), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Confirmations < 1 {
+		return 0
+	}
+	return res.BlockHeight
 }
 
 // medianTime is the median time of recent blocks at alpha's tip.
@@ -581,17 +608,288 @@ func TestChainedSwapsReserve(t *testing.T) {
 		waitFor(t, name+" swaps mined", 2*time.Minute, func() bool {
 			mine(t, 1)
 			for _, txid := range txids {
-				var res struct {
-					Confirmations int64 `json:"confirmations"`
-				}
-				if err := json.Unmarshal([]byte(mustCtl(t, "alpha_node", "getrawtransaction", txid, "1")), &res); err != nil {
-					t.Fatal(err)
-				}
-				if res.Confirmations < 1 {
+				if minedAt(t, txid) == 0 {
 					return false
 				}
 			}
 			return true
 		})
+	}
+}
+
+const ska1 = cointype.CoinType(1)
+
+// unspents lists tw's outputs of coin type ct in every account, as the wallet
+// reports them: the driver's Unspents keeps only VAR.
+func unspents(t *testing.T, tw *tWallet, ct cointype.CoinType) []*walletjson.ListUnspentResult {
+	t.Helper()
+	var res []*walletjson.ListUnspentResult
+	var err error
+	switch w := tw.w.wallet.(type) {
+	case *rpcWallet:
+		err = w.rpcClientRawRequest(tCtx, methodListUnspent, anylist{0, 9999999, nil, "", uint8(ct)}, &res)
+	case *spvWallet:
+		res, err = w.dcrWallet.ListUnspent(tCtx, 0, math.MaxInt32, nil, "", &ct)
+	default:
+		t.Fatalf("%s: wallet %T", tw.name, w)
+	}
+	if err != nil {
+		t.Fatalf("%s: %v", tw.name, err)
+	}
+	return res
+}
+
+// skaOutputs is tw's SKA1 outputs and their amounts. Each must be confirmed and
+// spendable, as a VAR output must be to fund anything.
+func skaOutputs(t *testing.T, tw *tWallet) map[outPoint]string {
+	t.Helper()
+	m := make(map[outPoint]string)
+	for _, u := range unspents(t, tw, ska1) {
+		if u.Confirmations < 1 || !u.Spendable {
+			t.Fatalf("%s: SKA1 output %s:%d unconfirmed or unspendable", tw.name, u.TxID, u.Vout)
+		}
+		h, err := chainhash.NewHashFromStr(u.TxID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m[newOutPoint(h, u.Vout)] = u.Amount
+	}
+	return m
+}
+
+// sendSKA1 sends tw's account acct one SKA1 output of each amount from alpha,
+// in one sendmany (alpha's SKA1 change is unconfirmed until mined), and waits
+// for tw to hold them confirmed.
+func sendSKA1(t *testing.T, tw *tWallet, acct string, amts ...string) {
+	t.Helper()
+	outs := make([]string, len(amts))
+	for i, amt := range amts {
+		addr, err := tw.w.wallet.ExternalAddress(tCtx, acct)
+		if err != nil {
+			t.Fatal(err)
+		}
+		outs[i] = strconv.Quote(addr.String()) + ":" + strconv.Quote(amt)
+	}
+	txid := mustCtl(t, "alpha", "sendmany", "default", "{"+strings.Join(outs, ",")+"}", "1", "", "1")
+	waitFor(t, "SKA1 payment mined", 2*time.Minute, func() bool { mine(t, 1); return minedAt(t, txid) > 0 })
+	waitFor(t, tw.name+" holds the SKA1", 30*time.Second, func() bool {
+		n := 0
+		for _, u := range unspents(t, tw, ska1) {
+			if u.TxID == txid && u.Confirmations > 0 {
+				n++
+			}
+		}
+		return n == len(amts)
+	})
+}
+
+// TestSPVMinedSKAContract is item 1 over the native SPV wallet's block filter
+// search: with no transaction data, a contract paid in SKA1 and mined within
+// ContractSearchLimit must fail the audit as paying no VAR. The same contract
+// paid in VAR and found the same way must pass, so the search itself works.
+func TestSPVMinedSKAContract(t *testing.T) {
+	tw := tNativeWallet(t)
+	w := tw.w
+	self, err := w.DepositAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ coin, coinType string }{{"VAR", "0"}, {"SKA1", "1"}} {
+		kind := c.coin + " contract"
+		secretHash := sha256.Sum256(encode.RandomBytes(32))
+		contract, err := dexmon.MakeContract(self, alphaAddress, secretHash[:], time.Now().Add(time.Hour).Unix(),
+			w.chainParams)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scriptAddr, err := stdaddr.NewAddressScriptHashV0(contract, w.chainParams)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, pkScript := scriptAddr.PaymentScript()
+		txid := mustCtl(t, "alpha", "sendtoaddress", scriptAddr.String(), "1", "", "", c.coinType)
+		h, err := chainhash.NewHashFromStr(txid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vout := -1
+		for i, out := range accepted(t, kind, h).TxOut {
+			if string(out.PkScript) == string(pkScript) {
+				vout = i
+			}
+		}
+		if vout < 0 {
+			t.Fatalf("%s: %s pays nothing to the contract", kind, txid)
+		}
+		var height int64
+		waitFor(t, kind+" mined", 2*time.Minute, func() bool { mine(t, 1); height = minedAt(t, txid); return height > 0 })
+		waitFor(t, "native wallet at the contract's block", 30*time.Second, func() bool {
+			_, tip, err := w.wallet.GetBestBlock(tCtx)
+			return err == nil && tip >= height
+		})
+		_, err = w.AuditContract(toCoinID(h, uint32(vout)), contract, nil, false)
+		switch {
+		case c.coin == "VAR" && err != nil:
+			t.Fatalf("%s: %v", kind, err)
+		case c.coin != "VAR" && (err == nil || !strings.Contains(err.Error(), "pays no VAR")):
+			t.Fatalf("%s: want the audit's pays-no-VAR error, got %v", kind, err)
+		}
+	}
+}
+
+// TestSKAWalletFunding is item 6 on the network: the trading1 and spvwallet
+// RPC wallets hold step 1's SKA1 outputs, and the native SPV wallet is sent the
+// same five. Each amount funded, sent or withdrawn is above the wallet's largest
+// VAR output, so a misread SKA1 output would be picked before any VAR one. Each
+// operation must succeed, and its transaction must be on alpha (spvwallet is the
+// external wallet's own SPV publish path). After each, no SKA1 output may be
+// among the coins returned, the outputs locked or any input, and the wallet's
+// SKA1 outputs must be unchanged. The native wallet's account transfer sweeps
+// the mixed account, which then holds SKA1 too.
+func TestSKAWalletFunding(t *testing.T) {
+	harnessSKA1 := []string{"1000", "1000", "1000", "1000", "5"} // harness.sh's SKA1_OUTPUTS
+	native := tNativeWallet(t)
+	sendSKA1(t, native, defaultAccountName, harnessSKA1...)
+	for _, tw := range []*tWallet{tRPCWallet(t), tRPCWalletNamed(t, "spvwallet", "spvwallet"), native} {
+		w, name := tw.w, tw.name
+		ska := skaOutputs(t, tw)
+		if got := slices.Sorted(maps.Values(ska)); !slices.Equal(got, harnessSKA1) {
+			t.Fatalf("%s: SKA1 outputs %v, want %v", name, got, harnessSKA1)
+		}
+		noSKA := func(kind string, coins asset.Coins, txs ...*wire.MsgTx) {
+			t.Helper()
+			var ops []outPoint
+			for _, c := range coins {
+				h, v, err := decodeCoinID(c.ID())
+				if err != nil {
+					t.Fatal(err)
+				}
+				ops = append(ops, newOutPoint(h, v))
+			}
+			for _, tx := range txs {
+				for _, in := range tx.TxIn {
+					ops = append(ops, newOutPoint(&in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index))
+				}
+			}
+			locked, err := w.wallet.LockedOutputs(tCtx, "")
+			if err != nil {
+				t.Fatalf("%s: %v", kind, err)
+			}
+			for _, l := range locked {
+				h, err := chainhash.NewHashFromStr(l.Txid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ops = append(ops, newOutPoint(h, l.Vout))
+			}
+			for _, op := range ops {
+				if _, is := ska[op]; is {
+					t.Fatalf("%s: SKA1 output %s funded, spent or locked", kind, op)
+				}
+			}
+			if now := skaOutputs(t, tw); !maps.Equal(now, ska) {
+				t.Fatalf("%s: SKA1 outputs %v, were %v", kind, now, ska)
+			}
+		}
+		// amount is above the largest VAR output, which grows across runs.
+		amount := func() uint64 {
+			var largest uint64
+			for _, u := range unspents(t, tw, cointype.CoinTypeVAR) {
+				v, err := coinStrToAtoms(u.Amount)
+				if err != nil {
+					t.Fatal(err)
+				}
+				largest = max(largest, v)
+			}
+			return largest + 1e8
+		}
+		order := func(opts map[string]string) *asset.Order {
+			return &asset.Order{Version: version, Value: amount(), MaxSwapCount: 1, MaxFeeRate: tFeeRate,
+				FeeSuggestion: tFeeRate, Options: opts}
+		}
+
+		coins, _, _, err := w.FundOrder(order(nil))
+		if err != nil {
+			t.Fatalf("%s fund: %v", name, err)
+		}
+		t.Cleanup(func() { w.ReturnCoins(coins) })
+		noSKA(name+" fund", coins)
+		if err := w.ReturnCoins(coins); err != nil {
+			t.Fatal(err)
+		}
+
+		coin, err := w.Send(alphaAddress, amount(), tFeeRate)
+		if err != nil {
+			t.Fatalf("%s send: %v", name, err)
+		}
+		noSKA(name+" send", nil, accepted(t, name+" send", coinTxid(t, name+" send", coin.ID())))
+		coin, err = w.Withdraw(alphaAddress, amount(), tFeeRate)
+		if err != nil {
+			t.Fatalf("%s withdraw: %v", name, err)
+		}
+		noSKA(name+" withdraw", nil, accepted(t, name+" withdraw", coinTxid(t, name+" withdraw", coin.ID())))
+
+		splitCoins, _, splitFee, err := w.FundOrder(order(map[string]string{"swapsplit": "true"}))
+		if err != nil {
+			t.Fatalf("%s split: %v", name, err)
+		}
+		t.Cleanup(func() { w.ReturnCoins(splitCoins) })
+		if splitFee == 0 || len(splitCoins) != 1 {
+			t.Fatalf("%s: fee %d, %d funding coins: no split built", name, splitFee, len(splitCoins))
+		}
+		noSKA(name+" split", splitCoins, accepted(t, name+" split", coinTxid(t, name+" split", splitCoins[0].ID())))
+		if err := w.ReturnCoins(splitCoins); err != nil {
+			t.Fatal(err)
+		}
+
+		if tw.nw == nil {
+			continue
+		}
+		// The transfer sweeps the mixed account into default: VAR and SKA1 there.
+		mixedAddr, err := w.wallet.ExternalAddress(tCtx, mixedAccountName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mixedVAR := pay(t, mixedAddr, 2e8)
+		sendSKA1(t, tw, mixedAccountName, "1000", "5")
+		waitFor(t, "native wallet holds the mixed VAR", 30*time.Second, func() bool {
+			uns, err := w.wallet.Unspents(tCtx, mixedAccountName)
+			return err == nil && slices.ContainsFunc(uns, func(u *walletjson.ListUnspentResult) bool {
+				return u.TxID == mixedVAR.txHash().String() && u.Vout == mixedVAR.vout()
+			})
+		})
+		ska = skaOutputs(t, tw)
+		defaultTxids := make(map[string]bool)
+		uns, err := w.wallet.Unspents(tCtx, defaultAccountName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range uns {
+			defaultTxids[u.TxID] = true
+		}
+		if err := tw.nw.transferAccount(tCtx, defaultAccountName, mixedAccountName); err != nil {
+			t.Fatalf("%s transfer: %v", name, err)
+		}
+		// The transfer's output is the default account's one new output.
+		var transfer *wire.MsgTx
+		uns, err = w.wallet.Unspents(tCtx, defaultAccountName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range uns {
+			if !defaultTxids[u.TxID] {
+				h, err := chainhash.NewHashFromStr(u.TxID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				transfer = accepted(t, name+" transfer", h)
+			}
+		}
+		if transfer == nil || !slices.ContainsFunc(transfer.TxIn, func(in *wire.TxIn) bool {
+			return in.PreviousOutPoint == *mixedVAR.wireOutPoint()
+		}) {
+			t.Fatalf("%s: no transfer of the mixed account's VAR", name)
+		}
+		noSKA(name+" transfer", nil, transfer)
 	}
 }
