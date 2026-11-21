@@ -94,6 +94,18 @@ case $1 in
     ./simnet-trade-tests --base zcl --quote btc --regasset btc ${@:2}
     ;;
 
+  varbtc)
+    ./simnet-trade-tests --base var --base1node trading1 --base2node trading2 ${@:2}
+    ;;
+
+  varltc)
+    ./simnet-trade-tests --base var --quote ltc --base1node trading1 --base2node trading2 ${@:2}
+    ;;
+
+  varspvbtc)
+    ./simnet-trade-tests --base var --base1node trading1 --base2node trading2 -base1type spv ${@:2}
+    ;;
+
   help|--help|-h)
     ./simnet-trade-tests --help
     cat <<EOF
@@ -122,6 +134,9 @@ dcrusdc - Decred RPC wallet and Ethereum wallet with usdc.eth test token on mark
 polygondcr - Decred RPC wallet and Polygon RPC wallet on POLYGON-DCR market
 dcrusdcpolygon - Decred RPC wallet and Polygon wallet with usdc.polygon test token on market DCR-USDC.POLYGON
 zclbtc - Zclassic RPC wallet and Bitcoin RPC wallet on ZCL-BTC
+varbtc - RPC wallets on VAR-BTC market (VAR harness, not DCR)
+varltc - RPC wallets on VAR-LTC market (VAR harness, not DCR)
+varspvbtc - VAR SPV wallet and Bitcoin RPC wallet on VAR-BTC
 
 ---------------------
 

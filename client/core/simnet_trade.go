@@ -44,6 +44,7 @@ import (
 	"decred.org/dcrdex/client/asset/eth"
 	"decred.org/dcrdex/client/asset/firo"
 	"decred.org/dcrdex/client/asset/ltc"
+	"decred.org/dcrdex/client/asset/mon"
 	"decred.org/dcrdex/client/asset/polygon"
 	"decred.org/dcrdex/client/asset/zcl"
 	"decred.org/dcrdex/client/asset/zec"
@@ -56,6 +57,7 @@ import (
 	dexdgb "decred.org/dcrdex/dex/networks/dgb"
 	dexdoge "decred.org/dcrdex/dex/networks/doge"
 	dexeth "decred.org/dcrdex/dex/networks/eth"
+	dexmon "decred.org/dcrdex/dex/networks/mon"
 	"decred.org/dcrdex/dex/order"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -871,6 +873,10 @@ Client 2 placing Order 3:
 	// Login->connectWallets will error for btc spv wallets if the wallet is not
 	// first disconnected.
 	s.client2.disconnectWallets()
+	// Disable after disconnect so the background bond maintenance loop
+	// doesn't reconnect the old wallets (reopening the Badger tx history
+	// DB) before initialize() replaces them with new wallet objects.
+	s.client2.disableWallets()
 
 	// Allow some time for orders to be revoked due to inaction, and
 	// for requests pending on the server to expire (usually bTimeout).
@@ -886,8 +892,13 @@ Client 2 placing Order 3:
 	// TODO: cannot do this anymore with built-in wallets
 	err = s.client2.core.initialize()
 	if err != nil {
-		return fmt.Errorf("client 2 login error: %w", err)
+		return fmt.Errorf("client 2 initialize error: %w", err)
 	}
+	// Reset loggedIn so Login re-runs resolveActiveTrades, which loads
+	// orders from the db into the new dexConnection created by initialize.
+	s.client2.core.loginMtx.Lock()
+	s.client2.core.loggedIn = false
+	s.client2.core.loginMtx.Unlock()
 	err = s.client2.core.Login(s.client2.appPass)
 	if err != nil {
 		return fmt.Errorf("client 2 login error: %w", err)
@@ -908,9 +919,11 @@ Client 2 placing Order 3:
 	}
 	c2dc.tradeMtx.RUnlock()
 
-	// Wait a bit for tick cycle to trigger inactive trade retirement and funds unlocking.
-	halfBTimeout := time.Millisecond * time.Duration(c2dc.cfg.BroadcastTimeout/2)
-	time.Sleep(halfBTimeout)
+	// Wait for tick cycles to trigger inactive trade retirement and funds
+	// unlocking. Revoked matches at MakerSwapCast may need multiple tick
+	// cycles to fully process and return locked coins.
+	twoBTimeout := 2 * time.Millisecond * time.Duration(c2dc.cfg.BroadcastTimeout)
+	time.Sleep(twoBTimeout)
 
 	c2Balance, err = s.client2.core.AssetBalance(s.base.id) // client 2 is seller
 	if err != nil {
@@ -1564,7 +1577,7 @@ func newHarnessCtrl(assetID uint32) *harnessCtrl {
 		baseChainSymbol = symbolParts[1]
 	}
 	switch assetID {
-	case dcr.BipID, btc.BipID, ltc.BipID, bch.BipID, doge.BipID, firo.BipID, zec.BipID, zcl.BipID, dgb.BipID, dash.BipID:
+	case dcr.BipID, mon.BipID, btc.BipID, ltc.BipID, bch.BipID, doge.BipID, firo.BipID, zec.BipID, zcl.BipID, dgb.BipID, dash.BipID:
 		return &harnessCtrl{
 			dir:     filepath.Join(dextestDir, baseChainSymbol, "harness-ctl"),
 			fundCmd: "./alpha",
@@ -1617,6 +1630,16 @@ var accountBIPs = map[uint32]bool{
 }
 
 func dcrWallet(wt SimWalletType, node string) (*tWallet, error) {
+	return harnessDcrWallet("dcr", wt, node)
+}
+
+// varWallet is the VAR harness's wallet (dex/testing/var), a dcrwallet fork
+// with the same config layout.
+func varWallet(wt SimWalletType, node string) (*tWallet, error) {
+	return harnessDcrWallet("var", wt, node)
+}
+
+func harnessDcrWallet(harness string, wt SimWalletType, node string) (*tWallet, error) {
 	switch wt {
 	case WTSPVNative:
 		return &tWallet{
@@ -1628,7 +1651,7 @@ func dcrWallet(wt SimWalletType, node string) (*tWallet, error) {
 		return nil, fmt.Errorf("invalid wallet type: %v", wt)
 	}
 
-	cfg, err := config.Parse(filepath.Join(dextestDir, "dcr", node, fmt.Sprintf("%s.conf", node)))
+	cfg, err := config.Parse(filepath.Join(dextestDir, harness, node, fmt.Sprintf("%s.conf", node)))
 	if err != nil {
 		return nil, err
 	}
@@ -1811,6 +1834,8 @@ func (s *simulationTest) newClient(name string, cl *SimClient) (*simulationClien
 		switch assetID {
 		case dcr.BipID:
 			tw, err = dcrWallet(wt, node)
+		case mon.BipID:
+			tw, err = varWallet(wt, node)
 		case btc.BipID:
 			tw, err = btcWallet(wt, node)
 		case eth.BipID:
@@ -2118,10 +2143,10 @@ func (s *simulationTest) assertBalanceChanges(client *simulationClient, isRefund
 	var baseFees, quoteFees int64
 	if fees := ord.FeesPaid; fees != nil && !isRefund {
 		if ord.Sell {
-			baseFees = int64(fees.Swap)
+			baseFees = int64(fees.Swap + fees.Funding)
 			quoteFees = int64(fees.Redemption)
 		} else {
-			quoteFees = int64(fees.Swap)
+			quoteFees = int64(fees.Swap + fees.Funding)
 			baseFees = int64(fees.Redemption)
 		}
 	}
@@ -2148,15 +2173,22 @@ func (s *simulationTest) assertBalanceChanges(client *simulationClient, isRefund
 		// } else {
 		// 	size += dexbtc.RefundSigScriptSize + dexbtc.P2PKHOutputSize
 		// }
+		// The VAR driver's refund size (refundTx: the unsigned tx, whose input
+		// has a 1-byte empty script, plus the sig script and output) at 10 atoms/B.
+		varRefundFees := int64(dexmon.MsgTxOverhead+dexmon.TxInOverhead+1+dexmon.RefundSigScriptSize+dexmon.P2PKHOutputSize) * 10
 		if ord.Sell {
 			if accountBIPs[s.base.id] {
 				baseFees = ethRefundFees
+			} else if s.base.id == mon.BipID {
+				baseFees = varRefundFees
 			} else {
 				baseFees = utxoRefundFees
 			}
 		} else {
 			if accountBIPs[s.quote.id] {
 				quoteFees = ethRefundFees
+			} else if s.quote.id == mon.BipID {
+				quoteFees = varRefundFees
 			} else {
 				quoteFees = utxoRefundFees
 			}
