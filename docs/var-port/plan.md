@@ -477,12 +477,16 @@ runs with an RPC wallet and with a native SPV wallet, unless noted.
 
 ## Step 8. Server market and trade tests
 
-**Server harness.** `dex/testing/dcrdex/genmarkets.sh` gains a VAR asset entry: `maxFeeRate`
-10, `swapConf` 1, the config of the alpha node, a `regXPub` from a `server_fees` account in
-the alpha wallet, and a VAR bond amount. It also gains `var_btc` and `var_ltc` markets with
-VAR as base: 1 VAR lots, which leaves a wide margin over `MinLotSize(10)`. Lock times are the
-build's 1 minute (taker) and 2 minutes (maker). `server/asset/importall` gains the blank import
-of `server/asset/mon`, so that `dcrdex` registers the VAR server asset.
+**Server harness.** When the VAR harness runs, `dex/testing/dcrdex/genmarkets.sh` hands off
+to `genmarkets-var.sh`, which writes the VAR markets only, so the VAR runs need no DCR
+harness. Its VAR asset entry: `maxFeeRate` 10, `swapConf` 1, the config of the alpha node, a
+`regXPub` from a `server_fees` account in the alpha wallet, and a 0.5 VAR bond. Its markets
+are `var_btc` (the BTC harness must run) and `var_ltc` (when the LTC harness runs), with VAR
+as base: 1 VAR lots, which leaves a wide margin over `MinLotSize(10)`. Their rate step of
+1000 puts the trade tests' lowest rate, 100 steps, above the server's minimum rate: 47200
+for BTC, 9440 for LTC. Lock times are the build's 1 minute (taker) and 2 minutes (maker).
+`server/asset/importall` gains the blank import of `server/asset/mon`, so that `dcrdex`
+registers the VAR server asset.
 
 **Trade tests.**
 
