@@ -7,6 +7,9 @@
 TEST_ROOT=~/dextest
 FILEPATH=${TEST_ROOT}/dcrdex/markets.json
 EPOCH_DURATION=${EPOCH:-15000}
+# 100 for the runs under SKA load (plan.md, step 9): the node's estimate is at
+# least 15 atoms/B there, and swaps at 10 would pay less than the VAR load.
+VAR_MAX_FEE_RATE=${VAR_MAX_FEE_RATE:-10}
 
 ~/dextest/ltc/harness-ctl/alpha getblockchaininfo &> /dev/null
 LTC_ON=$?
@@ -53,7 +56,7 @@ cat << EOF >> "${FILEPATH}"
         "VAR_simnet": {
             "bip44symbol": "var",
             "network": "simnet",
-            "maxFeeRate": 10,
+            "maxFeeRate": ${VAR_MAX_FEE_RATE},
             "swapConf": 1,
             "configPath": "${TEST_ROOT}/var/alpha/alpha_node.conf",
             "regXPub": "spubVWKGn9TGzyo7M4b5xubB5UV4joZ5HBMNBmMyGvYEaoZMkSxVG4opckpmQ26E85iHg8KQxrSVTdex56biddqtXBerG9xMN8Dvb3eNQVFFwpE",
