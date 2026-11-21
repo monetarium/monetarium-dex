@@ -131,6 +131,9 @@ waitfor() { # waitfor <desc> <cmd...>: retry for 60s
 }
 votes_ready() { [ "$(./alpha_node getrawmempool false votes | jq length)" -ge 5 ]; }
 wallet_on() { [ "$(./alpha getbestblock | jq -r .hash)" = "$1" ]; }
+LOCKED= # this mine-alpha holds the load lock
+unlock() { if [ -n "$LOCKED" ]; then rmdir ../load/lock; LOCKED=; fi; }
+trap unlock EXIT
 # Count heights, not generate calls: a block can be replaced at the same height,
 # e.g. when the background miner races another mine-alpha.
 TARGET=$(( $(./alpha_node getblockcount) + NUM ))
@@ -141,9 +144,21 @@ while HEIGHT=$(./alpha_node getblockcount) && [ "$HEIGHT" -lt "$TARGET" ]; do
     echo "mine-alpha: purchaseticket failed at height $HEIGHT" >&2
   fi
   if [ "$HEIGHT" -ge 143 ]; then waitfor "5 votes at height $HEIGHT" votes_ready; fi
+  # SKA1 and VAR load before the block, while load.sh is on (plan.md, step 9). One
+  # loaded block at a time: another mine-alpha (the background miner) would mine
+  # between this step and this block, from a mempool this step did not top up.
+  if [ -e ../load/on ]; then
+    waitfor "the load lock" mkdir ../load/lock
+    LOCKED=1
+    if [ "$(./alpha_node getblockcount)" != "$HEIGHT" ]; then unlock; continue; fi
+    ./load step
+  fi
   ./alpha_node regentemplate >/dev/null
   sleep 0.05
-  if ! OUT=$(./alpha_node generate 1 2>&1); then
+  OK=1
+  OUT=$(./alpha_node generate 1 2>&1) || OK=
+  unlock
+  if [ -z "$OK" ]; then
     # Another mine-alpha (the background miner) is mid-block: go round again.
     case $OUT in *"already discrete mining"*) sleep 0.5; continue ;; esac
     echo "$OUT" >&2; exit 1
@@ -151,6 +166,12 @@ while HEIGHT=$(./alpha_node getblockcount) && [ "$HEIGHT" -lt "$TARGET" ]; do
   # the alpha wallet must see the new tip before it can vote on it
   waitfor "alpha wallet on tip" wallet_on "$(./alpha_node getbestblockhash)"
 done
+EOF
+
+# ./load on|off|check|report: dex/testing/var/load.sh, which mine-alpha runs while it is on.
+cat > "${HCTL}/load" <<EOF
+#!/usr/bin/env bash
+"$(cd "$(dirname "$0")" && pwd)/load.sh" "\$@"
 EOF
 
 cat > "${HCTL}/fund" <<EOF
