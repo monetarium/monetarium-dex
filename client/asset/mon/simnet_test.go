@@ -26,6 +26,7 @@ import (
 	"decred.org/dcrdex/dex"
 	"decred.org/dcrdex/dex/config"
 	"decred.org/dcrdex/dex/encode"
+	dexmon "decred.org/dcrdex/dex/networks/mon"
 	dcrsecp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/chaincfg/chainhash"
@@ -80,9 +81,9 @@ func mustCtl(t *testing.T, script string, args ...string) string {
 func mine(t *testing.T, n int) { t.Helper(); mustCtl(t, "mine-alpha", strconv.Itoa(n)) }
 
 // accepted waits up to 10 s for alpha's node to know txid, in its mempool or a
-// block (it runs --txindex), and checks that the node's bytes hash to txid by
-// Monetarium's wire.
-func accepted(t *testing.T, kind string, txid *chainhash.Hash) {
+// block (it runs --txindex), checks that the node's bytes hash to txid by
+// Monetarium's wire, and returns the node's transaction.
+func accepted(t *testing.T, kind string, txid *chainhash.Hash) *wire.MsgTx {
 	t.Helper()
 	for i := 0; i < 20; i++ {
 		if out, err := ctl(t, "", "alpha_node", "getrawtransaction", txid.String()); err == nil {
@@ -90,14 +91,35 @@ func accepted(t *testing.T, kind string, txid *chainhash.Hash) {
 			if err != nil {
 				t.Fatalf("%s: %v", kind, err)
 			}
-			if tx, err := msgTxFromBytes(raw); err != nil || tx.TxHash() != *txid {
+			tx, err := msgTxFromBytes(raw)
+			if err != nil || tx.TxHash() != *txid {
 				t.Fatalf("%s: the node's bytes for %s do not hash to it (%v)", kind, txid, err)
 			}
-			return
+			return tx
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("%s: alpha's node does not have %s", kind, txid)
+	return nil
+}
+
+// pay sends atoms from alpha to addr, unmined, and returns the output paying it.
+func pay(t *testing.T, addr stdaddr.Address, atoms int64) *output {
+	t.Helper()
+	txid := mustCtl(t, "alpha", "sendtoaddress", addr.String(),
+		strconv.FormatFloat(dcrutil.Amount(atoms).ToCoin(), 'f', 8, 64))
+	h, err := chainhash.NewHashFromStr(txid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, pkScript := addr.PaymentScript()
+	for i, out := range accepted(t, "payment", h).TxOut {
+		if string(out.PkScript) == string(pkScript) {
+			return newOutput(h, uint32(i), uint64(out.Value), wire.TxTreeRegular)
+		}
+	}
+	t.Fatalf("%s pays nothing to %s", txid, addr)
+	return nil
 }
 
 func coinTxid(t *testing.T, kind string, coinID []byte) *chainhash.Hash {
@@ -394,33 +416,15 @@ func TestFeeCeilingNode(t *testing.T) {
 	_, pkScript := addr.PaymentScript()
 
 	// A 2 VAR output paying the key, from alpha.
-	fundID := mustCtl(t, "alpha", "sendtoaddress", addr.String(), "2")
-	fundHex := mustCtl(t, "alpha_node", "getrawtransaction", fundID)
-	fundRaw, err := hex.DecodeString(fundHex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fundTx, err := msgTxFromBytes(fundRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	vout := -1
-	for i, out := range fundTx.TxOut {
-		if string(out.PkScript) == string(pkScript) {
-			vout = i
-		}
-	}
-	if vout < 0 {
-		t.Fatalf("%s pays nothing to %s", fundID, addr)
-	}
-	in, fundHash := fundTx.TxOut[vout].Value, fundTx.TxHash()
+	fund := pay(t, addr, 2e8)
+	in := int64(fund.value)
 
 	// signed is the 30-output spend paying fee, at lock time lt.
 	const nOut = 30
 	signed := func(fee int64, lt uint32) *wire.MsgTx {
 		tx := wire.NewMsgTx()
 		tx.LockTime = lt
-		tx.AddTxIn(wire.NewTxIn(wire.NewOutPoint(&fundHash, uint32(vout), wire.TxTreeRegular), in, nil))
+		tx.AddTxIn(wire.NewTxIn(fund.wireOutPoint(), in, nil))
 		each := (in - fee) / nOut
 		for i := 0; i < nOut; i++ {
 			v := each
@@ -471,5 +475,123 @@ func TestFeeCeilingNode(t *testing.T) {
 	}
 	if out != at.TxHash().String() {
 		t.Fatalf("node returned %s, local txid %s", out, at.TxHash())
+	}
+}
+
+// TestDustChangeNode is item 4 on the network: step 5's TestDustChange, a swap
+// whose change output would hold 6040 atoms after paying its own fee at 10
+// atoms/B, is sent to alpha, which refuses an output under its dust threshold
+// of 6060 under --rejectnonstd.
+func TestDustChangeNode(t *testing.T) {
+	const contractVal, change = 1e7, 6040
+	for _, tw := range []*tWallet{tRPCWallet(t), tNativeWallet(t)} {
+		w, name := tw.w, tw.name
+		self, err := w.DepositAddress()
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr, err := stdaddr.DecodeAddress(self, w.chainParams)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// InitTxSize counts a 108-byte signature script; a real one is 107
+		// bytes, or 106 with a 32-byte R, which leaves 6050 atoms. A shorter R
+		// leaves 6060, not dust, and the swap is tried again.
+		for try := 1; ; try++ {
+			in := pay(t, addr, contractVal+(dexmon.InitTxSize-1)*tFeeRate+change)
+			waitFor(t, name+" knows its input", 30*time.Second, func() bool {
+				mine(t, 1) // the node's template lags its mempool
+				_, err := w.wallet.UnspentOutput(tCtx, in.txHash(), in.vout(), in.tree)
+				return err == nil
+			})
+			secretHash := sha256.Sum256(encode.RandomBytes(32))
+			receipts, _, _, err := w.Swap(&asset.Swaps{Version: version, Inputs: asset.Coins{in},
+				Contracts: []*asset.Contract{{Address: self, Value: contractVal, SecretHash: secretHash[:],
+					LockTime: uint64(time.Now().Add(time.Hour).Unix())}},
+				FeeRate: tFeeRate})
+			if err != nil {
+				t.Fatalf("%s swap: %v", name, err)
+			}
+			tx := accepted(t, name+" swap", coinTxid(t, name+" swap", receipts[0].Coin().ID()))
+			if len(tx.TxOut) == 1 {
+				break // the would-be change went to the fee
+			}
+			if try == 3 {
+				t.Fatalf("%s: a change output on %d tries, want a swap whose change is dust", name, try)
+			}
+		}
+	}
+}
+
+// TestChainedSwapsReserve is item 4 in practice: a 20-lot split-funded order,
+// funded at maxFeeRate 10, is swapped one lot at a time, each swap spending the
+// last one's change. Every swap must be accepted, and all 20 must confirm.
+// Simnet cannot force the 33-byte R values the reserve is sized for (step 3's
+// TestReservePerLot checks that bound), so this checks it holds in practice.
+func TestChainedSwapsReserve(t *testing.T) {
+	const lots = 20
+	for _, tw := range []*tWallet{tRPCWallet(t), tNativeWallet(t)} {
+		w, name := tw.w, tw.name
+		self, err := w.DepositAddress()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A random lot: a split output an earlier run left would fit a fixed
+		// order exactly, and the driver would rightly skip the split.
+		lotSize := 1e7 + rand.Uint64N(1e6)
+		coins, _, splitFee, err := w.FundOrder(&asset.Order{Version: version, Value: lots * lotSize,
+			MaxSwapCount: lots, MaxFeeRate: tFeeRate, FeeSuggestion: tFeeRate,
+			Options: map[string]string{"swapsplit": "true"}})
+		if err != nil {
+			t.Fatalf("%s fund: %v", name, err)
+		}
+		if splitFee == 0 || len(coins) != 1 {
+			t.Fatalf("%s: fee %d, %d funding coins: no split built", name, splitFee, len(coins))
+		}
+		accepted(t, name+" split", coinTxid(t, name+" split", coins[0].ID()))
+		t.Cleanup(func() { // the last change, if any: nil would return every locked coin
+			if len(coins) > 0 {
+				w.ReturnCoins(coins)
+			}
+		})
+
+		txids := make([]string, 0, lots)
+		for i := 1; i <= lots; i++ {
+			kind := name + " swap " + strconv.Itoa(i)
+			secretHash := sha256.Sum256(encode.RandomBytes(32))
+			receipts, change, _, err := w.Swap(&asset.Swaps{Version: version, Inputs: coins,
+				Contracts: []*asset.Contract{{Address: self, Value: lotSize, SecretHash: secretHash[:],
+					LockTime: uint64(time.Now().Add(time.Hour).Unix())}},
+				FeeRate: tFeeRate, LockChange: i < lots}) // as core: the last swap's change may be dust, nil
+			if err != nil {
+				t.Fatalf("%s: %v", kind, err)
+			}
+			// Each before the next: a child sent before alpha has its parent is
+			// an orphan, and a native SPV publish gets no answer.
+			h := coinTxid(t, kind, receipts[0].Coin().ID())
+			accepted(t, kind, h)
+			txids = append(txids, h.String())
+			coins = nil
+			if change != nil {
+				coins = asset.Coins{change}
+			}
+		}
+		// A block mined right after the last swap may not hold it yet: the
+		// node's template lags its mempool.
+		waitFor(t, name+" swaps mined", 2*time.Minute, func() bool {
+			mine(t, 1)
+			for _, txid := range txids {
+				var res struct {
+					Confirmations int64 `json:"confirmations"`
+				}
+				if err := json.Unmarshal([]byte(mustCtl(t, "alpha_node", "getrawtransaction", txid, "1")), &res); err != nil {
+					t.Fatal(err)
+				}
+				if res.Confirmations < 1 {
+					return false
+				}
+			}
+			return true
+		})
 	}
 }
