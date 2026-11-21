@@ -893,3 +893,143 @@ func TestSKAWalletFunding(t *testing.T) {
 		noSKA(name+" transfer", nil, transfer)
 	}
 }
+
+// TestLargeSwapUnderLoad is item 5 under step 9's load (plan.md, step 9): orders
+// in 0.1 VAR lots funded from 0.01 VAR outputs, with the wallet's other VAR
+// outputs locked, so coin selection cannot take a few big ones. Step 5's 2.1 VAR
+// order, which the outputs cover, must be refused at funding: its swap of about
+// 35 700 bytes would never confirm. The largest order that funds, 0.01 VAR at a
+// time below it, must be within two inputs of the cap, and its swap must confirm
+// within 3 blocks of its broadcast, the step's bound, every block until then
+// mined under load. RPC wallet only: the step's trade tests run RPC wallets.
+func TestLargeSwapUnderLoad(t *testing.T) {
+	const (
+		bigVal, lotSize = 2.1e8, 1e7
+		nOuts           = 240 // 2.1 VAR and its fees take 215 at maxFeeRate
+		maxFeeRate      = 100 // the VAR market's under load (genmarkets-var.sh's VAR_MAX_FEE_RATE)
+		maxBlocks       = 3
+	)
+	if _, err := os.Stat(filepath.Join(harnessDir(), "load", "on")); err != nil {
+		t.Skip("the load is off (harness-ctl/load on): the CI harness job runs without it")
+	}
+	tw := tRPCWallet(t)
+	w, rpcw := tw.w, tw.w.wallet.(*rpcWallet)
+
+	// trading1 pays itself nOuts outputs of 0.01 VAR, each to its own address:
+	// sendmany's amounts are keyed by address, and DepositAddress wraps past the
+	// gap limit. At maxFeeRate: the VAR load pays the node's estimate, which it
+	// keeps raising, and alpha's 10 atoms/B waited over 40 blocks unmined.
+	outs := make([]string, nOuts)
+	for i := range outs {
+		var addr string
+		if err := rpcw.rpcClientRawRequest(tCtx, "getnewaddress", anylist{w.depositAccount(), "ignore"}, &addr); err != nil {
+			t.Fatal(err)
+		}
+		outs[i] = strconv.Quote(addr) + `:"0.01"`
+	}
+	mustCtl(t, "trading1", "settxfee", strconv.FormatFloat(maxFeeRate*1000/1e8, 'f', 8, 64)) // VAR/kB
+	t.Cleanup(func() { ctl(t, "", "trading1", "settxfee", "0") })                            // dynamic fees again
+	fundTxid := mustCtl(t, "trading1", "sendmany", w.depositAccount(), "{"+strings.Join(outs, ",")+"}")
+	mustCtl(t, "trading1", "settxfee", "0")
+	waitFor(t, "funding mined", 2*time.Minute, func() bool { mine(t, 1); return minedAt(t, fundTxid) > 0 })
+
+	// Lock every other VAR output, in every account, the funding's change too.
+	var others []*wire.OutPoint
+	var held int
+	waitFor(t, "trading1 holds the outputs", 30*time.Second, func() bool {
+		others, held = nil, 0
+		for _, u := range unspents(t, tw, cointype.CoinTypeVAR) {
+			if u.TxID == fundTxid && u.Amount == "0.01" && u.Confirmations > 0 {
+				held++
+				continue
+			}
+			h, err := chainhash.NewHashFromStr(u.TxID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			others = append(others, wire.NewOutPoint(h, u.Vout, u.Tree))
+		}
+		return held == nOuts
+	})
+	if len(others) > 0 {
+		if err := w.wallet.LockUnspent(tCtx, false, others); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { w.wallet.LockUnspent(tCtx, true, others) })
+	}
+
+	// The DEX's swap rate: the estimate, capped at the market's maxFeeRate.
+	est := w.FeeRate()
+	if est == 0 {
+		t.Fatal("no fee rate estimate")
+	}
+	rate := min(est, maxFeeRate)
+	var coins asset.Coins
+	var err error
+	val := uint64(bigVal)
+	for ; val > 0; val -= 1e6 {
+		coins, _, _, err = w.FundOrder(&asset.Order{Version: version, Value: val, MaxSwapCount: val / lotSize,
+			MaxFeeRate: maxFeeRate, FeeSuggestion: rate})
+		if err == nil {
+			t.Cleanup(func() { w.ReturnCoins(coins) }) // spent coins error
+			break
+		}
+		if val == bigVal {
+			t.Logf("%d atoms refused: %v", val, err)
+		}
+	}
+	if val == bigVal || val == 0 {
+		t.Fatalf("funded %d atoms, want 2.1 VAR refused and a smaller order funded", val)
+	}
+	for _, c := range coins {
+		if h := coinTxid(t, "fund", c.ID()); h.String() != fundTxid || c.Value() != 1e6 {
+			t.Fatalf("funded from %s (%d atoms), not the 0.01 VAR outputs", h, c.Value())
+		}
+	}
+
+	self, err := w.DepositAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, err := strconv.ParseInt(mustCtl(t, "alpha_node", "getblockcount"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretHash := sha256.Sum256(encode.RandomBytes(32))
+	receipts, _, _, err := w.Swap(&asset.Swaps{Version: version, Inputs: coins,
+		Contracts: []*asset.Contract{{Address: self, Value: val, SecretHash: secretHash[:],
+			LockTime: uint64(time.Now().Add(time.Hour).Unix())}},
+		FeeRate: rate})
+	if err != nil {
+		t.Fatalf("swap: %v", err)
+	}
+	h := coinTxid(t, "swap", receipts[0].Coin().ID())
+	size := accepted(t, "swap", h).SerializeSize()
+	// The cap counts the driver's estimate, a few hundred bytes over the real size.
+	if size > dexmon.MaxTxSize || !swapTxTooLarge(uint32(len(coins)+2)*dexmon.P2PKHInputSize) {
+		t.Fatalf("swap %s of %d atoms: %d inputs, %d bytes, want within two inputs of the cap", h, val, len(coins), size)
+	}
+
+	var at int64
+	for {
+		if at = minedAt(t, h.String()); at > 0 {
+			break
+		}
+		tip, err := strconv.ParseInt(mustCtl(t, "alpha_node", "getblockcount"), 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tip >= from+maxBlocks {
+			t.Fatalf("swap %s (%d inputs, %d bytes, %d atoms/B, estimate %d) broadcast at %d, unmined at %d",
+				h, len(coins), size, rate, est, from, tip)
+		}
+		mine(t, 1)
+	}
+	t.Logf("swap %s: %d inputs, %d bytes at %d atoms/B (estimate %d), broadcast at %d, mined at %d: %d blocks",
+		h, len(coins), size, rate, est, from, at, at-from)
+	if at-from > maxBlocks {
+		t.Fatalf("mined %d blocks after its broadcast, want at most %d", at-from, maxBlocks)
+	}
+	mine(t, 1) // the step before the next block records the last one's load
+	mustCtl(t, "load", "check", strconv.FormatInt(from+1, 10), strconv.FormatInt(at, 10))
+}

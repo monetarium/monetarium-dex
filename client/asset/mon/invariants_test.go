@@ -1431,15 +1431,17 @@ func TestRedeemGeocodeFeeCap(t *testing.T) {
 	}
 }
 
-// TestLargeSwapRefused is item 5: under SKA load VAR gets about 37 500 bytes
-// of a default block, and a transaction larger than that never confirms. A
-// wallet holding only 300 outputs of 0.01 VAR gets an order of 2.4 VAR, which
-// takes 242 of them, a swap of about 40 500 bytes. The driver must not send a
-// swap or a split larger than that. An order of 2.1 VAR, 211 inputs and about
-// 35 300 bytes, fits and must be swapped, and so must the largest order
-// MaxOrder offers: its estimate selects coins as funding does.
+// TestLargeSwapRefused is item 5: under SKA load a regular VAR transaction gets
+// about 29 500 bytes of a default block, VAR's 37 500-byte share less the votes
+// and tickets the node adds first, and one larger than that never confirms. A
+// wallet holding only 300 outputs of 0.01 VAR gets orders of 2.4 VAR (242 of
+// them, a swap of about 40 500 bytes) and 2.1 VAR (211, about 35 300 bytes).
+// The driver must not send a swap or a split larger than the cap. An order of
+// 1.7 VAR, 171 inputs and about 28 600 bytes, fits and must be swapped, and so
+// must the largest order MaxOrder offers: its estimate selects coins as funding
+// does.
 func TestLargeSwapRefused(t *testing.T) {
-	const maxSize = 37_500
+	const maxSize = 29_500
 	// A P2PK output, whose input the driver sizes at 133 bytes, not 167.
 	p2pkScript, err := txscript.NewScriptBuilder().AddData(secp256k1.PrivKeyFromBytes(append(make([]byte, 31), 2)).PubKey().SerializeCompressed()).
 		AddOp(txscript.OP_CHECKSIG).Script()
@@ -1478,15 +1480,15 @@ func TestLargeSwapRefused(t *testing.T) {
 		mustSwap   bool
 		mustRefuse bool
 		pkh, pk    uint32 // the wallet's P2PKH and P2PK outputs of 0.01 VAR
-	}{{2.4e8, false, false, true, 300, 0}, {2.4e8, true, false, true, 300, 0}, {2.1e8, false, true, false, 300, 0}, {2.1e8, true, true, false, 300, 0},
+	}{{2.4e8, false, false, true, 300, 0}, {2.4e8, true, false, true, 300, 0}, {2.1e8, false, false, true, 300, 0}, {2.1e8, true, false, true, 300, 0},
+		{1.7e8, false, true, false, 300, 0}, {1.7e8, true, true, false, 300, 0},
 		{0, false, true, false, 300, 0}, // 0: MaxOrder's largest order
-		// At the cap's margin: 223 inputs, the most it allows, and 224, refused
-		// although that swap (about 37 496 bytes) would still fit.
-		{2.215e8, false, true, false, 300, 0}, {2.225e8, false, false, true, 300, 0},
+		// At the cap's margin: 175 inputs, the most it allows, and 176, refused.
+		{1.735e8, false, true, false, 300, 0}, {1.745e8, false, false, true, 300, 0},
 		// Orders that take every output, P2PK ones among them, estimated at
-		// 37 504, 37 501 and 37 500 bytes: the first two over the cap, the last
+		// 29 504, 29 501 and 29 500 bytes: the first two over the cap, the last
 		// at it. Each wallet covers its order and fees with under 0.01 VAR to spare.
-		{2.225e8, false, false, true, 223, 1}, {2.235e8, false, false, true, 219, 6}, {2.465e8, false, true, false, 129, 119}} {
+		{1.805e8, false, false, true, 152, 30}, {1.815e8, false, false, true, 148, 35}, {2.045e8, false, true, false, 58, 148}} {
 		t.Run(fmt.Sprintf("%d atoms, split=%v, %d+%d inputs", tc.val, tc.split, tc.pkh, tc.pk), func(t *testing.T) {
 			val, split := tc.val, tc.split
 			wallet, node, shutdown := tNewWallet()
@@ -1527,17 +1529,17 @@ func TestLargeSwapRefused(t *testing.T) {
 			}
 		})
 	}
-	// FundMultiOrder: per-order selection cannot fund more than 223 inputs
+	// FundMultiOrder: per-order selection cannot fund more than 175 inputs
 	// under the cap, so it falls back to a multi-order split, which is capped
-	// as well. At its margin, 2.22 VAR takes 223 inputs and is split; 2.225 VAR
-	// takes 224, an estimate of 37 501 bytes, and is refused. An order that
-	// takes all of 134 P2PKH and 113 P2PK outputs is estimated at 37 500 bytes,
-	// at the cap, and is split.
+	// as well. At its margin, 1.75 VAR takes 176 inputs and is split; 1.76 VAR
+	// takes 177, an estimate of 29 652 bytes, and is refused. Orders that take
+	// all of 63 P2PKH and 142 P2PK outputs, and of 153 and 29, are estimated at
+	// 29 500 bytes, at the cap, and split, and at 29 501, refused.
 	for _, tc := range []struct {
 		val      uint64
 		mustFund bool
 		pkh, pk  uint32
-	}{{2.4e8, false, 300, 0}, {2.22e8, true, 300, 0}, {2.225e8, false, 300, 0}, {2.46e8, true, 134, 113}} {
+	}{{2.4e8, false, 300, 0}, {1.75e8, true, 300, 0}, {1.76e8, false, 300, 0}, {2.045e8, true, 63, 142}, {1.8125e8, false, 153, 29}} {
 		t.Run(fmt.Sprintf("FundMultiOrder split of %d atoms, %d+%d inputs", tc.val, tc.pkh, tc.pk), func(t *testing.T) {
 			wallet, node, shutdown := tNewWallet()
 			defer shutdown()
