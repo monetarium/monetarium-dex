@@ -120,7 +120,15 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
     cannot raise the fee of a transaction it has broadcast: the node refuses any other spend of
     the contract as a double spend (NODE
     [`internal/mempool/mempool.go:1055-1058`][node:internal/mempool/mempool.go:1055-1058]).
-  - **A swap larger than VAR's share never confirms**, at any fee. `Swap` puts every funding
+  - **A swap larger than the room VAR's share leaves never confirms.** The node
+    fills the share with votes, automatic revocations and tickets before any regular
+    transaction (NODE
+    [`internal/mining/txpriorityqueue.go:103-134`][node:internal/mining/txpriorityqueue.go:103-134])
+    and skips a transaction that does not fit what is left, in every block
+    ([`internal/mining/mining.go:2458-2471`][node:internal/mining/mining.go:2458-2471]). 5 votes
+    and up to 20 new tickets a block alone (NODE
+    [`chaincfg/mainnetparams.go:526-536`][node:chaincfg/mainnetparams.go:526-536]) take about
+    7 950 bytes, which leaves about 29 500. `Swap` puts every funding
     coin of the order into one transaction (client
     [`dcr.go:3097`][dex:client/asset/dcr/dcr.go:3097], checked), and the only size cap is the
     node's 100 000-byte standard size at broadcast (NODE
@@ -313,6 +321,7 @@ Differs on `v1.0.6`:
 [dex:server/asset/dcr/dcr.go:822-856]: https://github.com/monetarium/monetarium-dex/blob/9521e9af8344064a3051e40a109518d8e94eba72/server/asset/dcr/dcr.go#L822-L856
 [dex:server/market/market.go:2315-2316]: https://github.com/monetarium/monetarium-dex/blob/9521e9af8344064a3051e40a109518d8e94eba72/server/market/market.go#L2315-L2316
 [node:chaincfg/mainnetparams.go:318-319]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/chaincfg/mainnetparams.go#L318-L319
+[node:chaincfg/mainnetparams.go:526-536]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/chaincfg/mainnetparams.go#L526-L536
 [node:chaincfg/simnetparams.go:545-559]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/chaincfg/simnetparams.go#L545-L559
 [node:chaincfg/simnetparams.go:653-668]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/chaincfg/simnetparams.go#L653-L668
 [node:chaincfg/testnetparams.go:542-545]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/chaincfg/testnetparams.go#L542-L545
@@ -333,6 +342,8 @@ Differs on `v1.0.6`:
 [node:internal/mempool/policy.go:361-363]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/mempool/policy.go#L361-L363
 [node:internal/mining/mining.go:2603]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/mining/mining.go#L2603
 [node:internal/mining/mining.go:880-906]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/mining/mining.go#L880-L906
+[node:internal/mining/mining.go:2458-2471]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/mining/mining.go#L2458-L2471
+[node:internal/mining/txpriorityqueue.go:103-134]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/mining/txpriorityqueue.go#L103-L134
 [node:internal/rpcserver/rpcserver.go:1141-1150]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/rpcserver/rpcserver.go#L1141-L1150
 [node:internal/rpcserver/rpcserver.go:1569-1578]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/rpcserver/rpcserver.go#L1569-L1578
 [node:txscript/sighash.go:393-399]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/txscript/sighash.go#L393-L399

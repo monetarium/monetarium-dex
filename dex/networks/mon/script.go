@@ -202,10 +202,14 @@ func MaxNoChangeFee(size uint64) uint64 {
 	return max(MaxFee, size*MaxFeeRate)
 }
 
-// MaxTxSize is the largest VAR transaction, in bytes, the client funds: VAR's
-// share of a default 375 000-byte block under SKA load, 10% plus a 10% share
-// of unused space. A larger one never confirms while SKA fills the blocks.
-const MaxTxSize = 37_500
+// MaxTxSize is the largest VAR transaction, in bytes, the client funds. Under
+// SKA load VAR's share of a default 375 000-byte block is 10% plus a 10% share
+// of unused space, 37 500 bytes, and the node fills it with votes, automatic
+// revocations and tickets before any regular transaction: 5 votes and 20 new
+// tickets alone take about 7 950.
+// A regular transaction that does not fit what is left is skipped in every
+// block while SKA fills the blocks.
+const MaxTxSize = 29_500
 
 // MinBondSize is the minimum bond size that avoids dust for a given max network
 // fee rate.

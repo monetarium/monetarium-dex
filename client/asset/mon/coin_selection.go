@@ -68,10 +68,10 @@ func orderEnough(val, lots, feeRate uint64, reportChange bool) func(sum uint64, 
 }
 
 // swapTxTooLarge reports whether a swap or split spending inputs of inputsSize
-// bytes could exceed dexmon.MaxTxSize, VAR's share of a block under SKA load,
-// so that it never confirms. It counts the overhead, input count varints of up
-// to 3 bytes and three outputs: contract, change and a split's extra. A swap
-// of more contracts can still be larger.
+// bytes could exceed dexmon.MaxTxSize, the room a regular VAR transaction gets
+// in a block under SKA load, so that it never confirms. It counts the
+// overhead, input count varints of up to 3 bytes and three outputs: contract,
+// change and a split's extra. A swap of more contracts can still be larger.
 func swapTxTooLarge(inputsSize uint32) bool {
 	return dexmon.MsgTxOverhead+4+uint64(inputsSize)+3*dexmon.P2PKHOutputSize > dexmon.MaxTxSize
 }

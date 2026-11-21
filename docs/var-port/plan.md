@@ -360,11 +360,15 @@ gets a real signer.
   - Setup: a wallet holding only 300 outputs of 0.01 VAR, and orders of 2.4 VAR (242 inputs)
     and 2.1 VAR (211 inputs), at `MaxFeeRate` 24 with 0.1 VAR lots.
   - Pass: the driver must not broadcast a single-contract swap or a split larger than
-    37 500 bytes, VAR's share of a default block under SKA load. A swap of several
-    contracts, one per match, can still be larger, and this test does not build one.
+    29 500 bytes. Under SKA load VAR's share of a default block is 37 500 bytes, and the node
+    fills it with votes, automatic revocations and tickets before any regular transaction: 5
+    votes and 20 new tickets alone take about 7 950 bytes. A regular transaction larger than
+    what is left is skipped in every block while SKA fills it. A swap of several contracts,
+    one per match, can still be larger, and this test does not build one.
   - Without the cap, coin selection picks 242 inputs for the 2.4 VAR order at `MaxFeeRate`
-    24 with 0.1 VAR lots, a swap of about 40 500 bytes: the question the item leaves open.
-  - An order of 2.1 VAR, 211 inputs and about 35 300 bytes, fits and must be swapped, with
+    24 with 0.1 VAR lots, a swap of about 40 500 bytes, and 211 for the 2.1 VAR order, about
+    35 300 bytes: both must be refused, with and without a split.
+  - An order of 1.7 VAR, 171 inputs and about 28 600 bytes, fits and must be swapped, with
     and without a split; so must the largest order `MaxOrder` offers.
   - The cap is in the coin selection for orders and for the multi-order split, so it does
     not refuse a send, a withdraw or a bond. `FundMultiOrder` with a split, for the 2.4 VAR
@@ -546,10 +550,16 @@ At 10, swaps would pay less than the VAR traffic they compete with.
     trade tests alone do not check this: they count unconfirmed coins in balances and do not
     wait for a redeem to confirm.
   - **Measured:** blocks from broadcast to confirmation for each of them.
-- **`TestLargeSwapUnderLoad`:** step 5's 2.1 VAR order, placed under load from a
-  wallet whose other VAR outputs are locked. Coin selection takes the largest coins first, so
+- **`TestLargeSwapUnderLoad`:** orders in step 5's 0.1 VAR lots, funded without a split
+  through the driver's `FundOrder` at `MaxFeeRate` 100 (the market's under load) from 240
+  outputs of 0.01 VAR, and swapped at the DEX's rate, the estimate capped at 100, from a wallet
+  whose other VAR outputs are locked. Coin selection takes the largest coins first, so
   otherwise it would fund from a few big ones.
-  - **Pass:** it is refused at funding, or its swap confirms.
+  - **Pass:** a 2.1 VAR order, 215 inputs at this rate, which the outputs cover, is refused at
+    funding: its swap, about 35 700 bytes, would never confirm (step 5, item 5).
+  - **Pass:** the largest order that funds, stepping down 0.01 VAR from 2.1, is within two
+    inputs of the 29 500-byte cap by the driver's size estimate, and its swap confirms within
+    3 blocks of its broadcast.
 - **Fee-rate sweep:** time to confirm for VAR traffic at rates around the DEX's. Recorded for
   the VAR lock-time choice, which is made after this step; not a pass or fail condition.
 

@@ -241,12 +241,20 @@ func TestFeeCaps(t *testing.T) {
 	}
 }
 
-// TestMaxTxSize pins MaxTxSize to VAR's share of the node's default block
-// under SKA load: 10% of its default blockmaxsize of 375 000 bytes, plus a 10%
-// share of unused space, which a full block leaves none of.
+// TestMaxTxSize pins MaxTxSize under the room a regular VAR transaction gets in
+// the node's default block under SKA load: VAR's share, 10% of its default
+// blockmaxsize of 375 000 bytes plus a 10% share of unused space, which a full
+// block leaves none of, less the votes and tickets the node adds first, at
+// their most per block: 5 votes and 20 new tickets, at the sizes simnet blocks
+// carry (386 and 301 bytes). Automatic revocations come on top. The cap sits
+// within 100 bytes under that room.
 func TestMaxTxSize(t *testing.T) {
-	const nodeDefaultBlockMaxSize = 375_000
-	if MaxTxSize != nodeDefaultBlockMaxSize/10 {
-		t.Fatalf("MaxTxSize = %d, want %d", MaxTxSize, nodeDefaultBlockMaxSize/10)
+	const (
+		nodeDefaultBlockMaxSize = 375_000
+		stakeTree               = 5*386 + 20*301
+		room                    = nodeDefaultBlockMaxSize/10 - stakeTree // 29 550
+	)
+	if MaxTxSize > room || MaxTxSize < room-100 {
+		t.Fatalf("MaxTxSize = %d, want at most %d and at least %d", MaxTxSize, room, room-100)
 	}
 }
