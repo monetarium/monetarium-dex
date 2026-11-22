@@ -1,6 +1,8 @@
 # Nightly VAR trade tests on the BTC, LTC and dcrdex harnesses: docs/var-port/plan.md,
 # step 1a. They need other chains' nodes and long runs, so they stay out of the per-PR job.
-# A PR that edits this file runs it too, since schedule and dispatch only see main.
+# A PR that edits this file, the VAR harness or a VAR asset runs it too: the required per-PR job
+# runs neither the trade tests nor the load runs, and such a change reaches them. A new push
+# cancels the PR's run still going.
 name: VAR nightly
 on:
   schedule:
@@ -8,7 +10,10 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    paths: [.github/workflows/var-nightly.yml]
+    paths: [.github/workflows/var-nightly.yml, dex/testing/var/**, client/asset/mon/**, server/asset/mon/**]
+concurrency:
+  group: var-nightly-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 defaults:
