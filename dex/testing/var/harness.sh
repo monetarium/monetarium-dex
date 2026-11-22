@@ -130,7 +130,9 @@ waitfor() { # waitfor <desc> <cmd...>: retry for 60s
   echo "mine-alpha: timeout: $desc" >&2; exit 1
 }
 votes_ready() { [ "$(./alpha_node getrawmempool false votes | jq length)" -ge 5 ]; }
-wallet_on() { [ "$(./alpha getbestblock | jq -r .hash)" = "$1" ]; }
+# The node's tip as of each try: another mine-alpha (the background miner) can mine
+# right after this one, and the wallet then passes the block this one mined.
+wallet_on() { [ "$(./alpha getbestblock | jq -r .hash)" = "$(./alpha_node getbestblockhash)" ]; }
 LOCKED= # this mine-alpha holds the load lock
 unlock() { if [ -n "$LOCKED" ]; then rmdir ../load/lock; LOCKED=; fi; }
 trap unlock EXIT
@@ -164,7 +166,7 @@ while HEIGHT=$(./alpha_node getblockcount) && [ "$HEIGHT" -lt "$TARGET" ]; do
     echo "$OUT" >&2; exit 1
   fi
   # the alpha wallet must see the new tip before it can vote on it
-  waitfor "alpha wallet on tip" wallet_on "$(./alpha_node getbestblockhash)"
+  waitfor "alpha wallet on tip" wallet_on
 done
 EOF
 
