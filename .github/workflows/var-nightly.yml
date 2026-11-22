@@ -2,7 +2,8 @@
 # step 1a. They need other chains' nodes and long runs, so they stay out of the per-PR job.
 # A PR that edits this file, the VAR harness or a VAR asset runs it too: the required per-PR job
 # runs neither the trade tests nor the load runs, and such a change reaches them. A new push
-# cancels the PR's run still going.
+# cancels the PR's run still going. A VAR asset's tests do not reach the runs, save the harness-tagged
+# simnet_test.go's TestLargeSwapUnderLoad: a later pattern overrides an earlier one, so it comes last.
 name: VAR nightly
 on:
   schedule:
@@ -10,7 +11,8 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    paths: [.github/workflows/var-nightly.yml, dex/testing/var/**, client/asset/mon/**, server/asset/mon/**]
+    paths: [.github/workflows/var-nightly.yml, dex/testing/var/**, client/asset/mon/**, server/asset/mon/**,
+      '!client/asset/mon/**_test.go', '!server/asset/mon/**_test.go', client/asset/mon/simnet_test.go]
 concurrency:
   group: var-nightly-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
