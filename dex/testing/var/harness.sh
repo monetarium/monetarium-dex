@@ -21,6 +21,7 @@ BETA_NODE_RPC_PORT="19671"
 TRADING_WALLET1_PORT="19681"
 TRADING_WALLET2_PORT="19682"
 SPV_WALLET_PORT="19683"
+STAKER_WALLET_PORT="19684"
 
 # The harness seed: it owns the mining address and the SKA1 emission address
 # (simnet sends the whole SKA1 emission to SsWKp7wtdTZYabYFYSc9cnxhwFEjA5g4pFc).
@@ -29,6 +30,7 @@ ALPHA_MINING_ADDR="SsXciQNTo3HuV5tX3yy4hXndRWgLMRVC7Ah"
 TRADING_WALLET1_SEED="31cc0eeb220aa5b1f1ab3b6c47529d737976af1a556b156a665408f1711c962f"
 TRADING_WALLET2_SEED="3db72efa55b9e6cce9c27dde9bea848c6199004f9b1ae2add3b04389495edb9c"
 SPV_WALLET_SEED="8a3f1e5c7b2d4906e1f8a7c3b5d2e4f60718293a4b5c6d7e8f90a1b2c3d4e5f6"
+STAKER_WALLET_SEED="8befbe7cf0c44abd75a42081c67c381e608096a385f742426de0e90fc038aac6"
 
 # Simnet SKA1 emission key (the private key is 3; its public key is in the node's
 # simnet params). The emission window is heights 150-250.
@@ -110,11 +112,13 @@ cat > "${HCTL}/beta_node" <<EOF
 EOF
 
 # Past height 143 a block waits for all 5 votes on the tip: simnet needs 3 of 5 from
-# stake validation height 144, and alpha owns every ticket. Waiting for 3 would leave
-# late votes in the mempool, where they count toward the next block's 3 but are stale. From height 34 alpha buys 5 tickets per block
-# while it holds fewer than the target pool, 320 (pool size 64 x 5 per block).
-# The wallet's ticket buyer is off: it grows the pool far past the target, and
-# the ticket price with it, until most VAR is locked in tickets.
+# stake validation height 144, and alpha and staker own every ticket. Waiting for 3 would leave
+# late votes in the mempool, where they count toward the next block's 3 but are stale. From height 34
+# alpha and staker each buy 5 tickets per block while they hold fewer than their share of the
+# target pool, 320 (pool size 64 x 5 per block): alpha 240, staker 80. The wallets' ticket buyer
+# is off: it grows the pool far past the target, and the ticket price with it, until most VAR
+# is locked in tickets. staker's purchases stop while ../staker/hold exists: the staker-fee
+# test holds its outputs, and a purchase spends any of them.
 cat > "${HCTL}/mine-alpha" <<'EOF'
 #!/usr/bin/env bash
 set -e
@@ -130,6 +134,14 @@ waitfor() { # waitfor <desc> <cmd...>: retry for 60s
   echo "mine-alpha: timeout: $desc" >&2; exit 1
 }
 votes_ready() { [ "$(./alpha_node getrawmempool false votes | jq length)" -ge 5 ]; }
+# Who held the votes up: a voting wallet that is locked, stopped or behind stalls every block.
+votes_stalled() {
+  echo "mine-alpha: $(./alpha_node getrawmempool false votes | jq length) votes in the mempool, node tip $(./alpha_node getbestblockhash)" >&2
+  for w in alpha staker; do
+    echo "mine-alpha: $w $(./$w walletinfo 2>&1 | jq -c '{unlocked, voting}' 2>&1), tip $(./$w getbestblock 2>&1 | jq -r .hash 2>&1)" >&2
+  done
+}
+tickets() { ./$1 getstakeinfo | jq '(.live // 0) + (.immature // 0)'; }
 # The node's tip as of each try: another mine-alpha (the background miner) can mine
 # right after this one, and the wallet then passes the block this one mined.
 wallet_on() { [ "$(./alpha getbestblock | jq -r .hash)" = "$(./alpha_node getbestblockhash)" ]; }
@@ -141,11 +153,15 @@ trap unlock EXIT
 TARGET=$(( $(./alpha_node getblockcount) + NUM ))
 while HEIGHT=$(./alpha_node getblockcount) && [ "$HEIGHT" -lt "$TARGET" ]; do
   # Without purchases the node stops building blocks, so a failure is shown, not hidden.
-  if [ "$HEIGHT" -ge 34 ] && [ "$(./alpha getstakeinfo | jq '(.live // 0) + (.immature // 0)')" -lt 320 ] &&
+  if [ "$HEIGHT" -ge 34 ] && [ "$(tickets alpha)" -lt 240 ] &&
     ! ./alpha purchaseticket default 999999 1 5 >/dev/null; then
     echo "mine-alpha: purchaseticket failed at height $HEIGHT" >&2
   fi
-  if [ "$HEIGHT" -ge 143 ]; then waitfor "5 votes at height $HEIGHT" votes_ready; fi
+  if [ "$HEIGHT" -ge 34 ] && [ ! -e ../staker/hold ] && [ "$(tickets staker)" -lt 80 ] &&
+    ! ./staker purchaseticket default 999999 1 5 >/dev/null; then
+    echo "mine-alpha: staker purchaseticket failed at height $HEIGHT" >&2
+  fi
+  if [ "$HEIGHT" -ge 143 ] && ! (waitfor "5 votes at height $HEIGHT" votes_ready); then votes_stalled; exit 1; fi
   # SKA1 and VAR load before the block, while load.sh is on (plan.md, step 9). One
   # loaded block at a time: another mine-alpha (the background miner) would mine
   # between this step and this block, from a mempool this step did not top up.
@@ -185,7 +201,7 @@ EOF
 
 cat > "${HCTL}/quit" <<EOF
 #!/usr/bin/env bash
-for w in miner w-alpha w-trading1 w-trading2 w-spvwallet; do tmux send-keys -t $SESSION:\$w C-c 2>/dev/null; done
+for w in miner w-alpha w-trading1 w-trading2 w-spvwallet w-staker; do tmux send-keys -t $SESSION:\$w C-c 2>/dev/null; done
 sleep 0.5
 tmux send-keys -t $SESSION:alpha C-c
 tmux send-keys -t $SESSION:beta C-c
@@ -246,6 +262,9 @@ write_wallet trading1 ${TRADING_WALLET1_PORT} "${RPC_SYNC[@]}" gaplimit=1000
 write_wallet trading2 ${TRADING_WALLET2_PORT} "${RPC_SYNC[@]}" gaplimit=1000
 # For the item 6 test, which checks the external wallet's own SPV publish path.
 write_wallet spvwallet ${SPV_WALLET_PORT} "${SPV_SYNC[@]}"
+# For the item 8 test: it votes its own tickets, so every vote's staker fee pays one address
+# of its default account, the account the DEX funds orders from.
+write_wallet staker ${STAKER_WALLET_PORT} "${RPC_SYNC[@]}" enablevoting=1
 chmod +x "${HCTL}"/*
 
 waitfor() { # waitfor <desc> <cmd...>: retry for 60s
@@ -307,12 +326,18 @@ create_wallet alpha ${ALPHA_WALLET_SEED}
 create_wallet trading1 ${TRADING_WALLET1_SEED}
 create_wallet trading2 ${TRADING_WALLET2_SEED}
 create_wallet spvwallet ${SPV_WALLET_SEED}
+create_wallet staker ${STAKER_WALLET_SEED}
 
 # Fee account on alpha for the dcrdex server's regXPub.
 "${HCTL}/alpha" createnewaccount server_fees >/dev/null
 
 cd "${HCTL}"
 height() { ./alpha_node getblockcount; }
+
+# staker's VAR for its tickets, before they go on sale at 34. Coinbase outputs mature after 16
+# blocks.
+./mine-alpha $((30 - $(height)))
+./alpha sendmany default "{\"$(./staker getnewaddress)\":\"10\",\"$(./staker getnewaddress)\":\"10\",\"$(./staker getnewaddress)\":\"10\"}" >/dev/null
 
 echo "Mining to height $((SKA1_EMISSION_HEIGHT + 1)) (votes from 144)"
 ./mine-alpha $((SKA1_EMISSION_HEIGHT + 1 - $(height)))

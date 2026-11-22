@@ -589,6 +589,15 @@ func (w *spvWallet) AccountBalance(ctx context.Context, confirms int32, accountN
 	if err != nil {
 		return nil, err
 	}
+	unspents, err := w.listUnspent(ctx, accountName)
+	if err != nil {
+		return nil, err
+	}
+	sf, err := stakerFeeAtoms(unspents)
+	if err != nil {
+		return nil, err
+	}
+	bal.Spendable -= min(dcrutil.Amount(sf), bal.Spendable)
 
 	return &walletjson.GetAccountBalanceResult{
 		AccountName:             accountName,
@@ -619,13 +628,15 @@ func (w *spvWallet) LockedOutputs(ctx context.Context, accountName string) ([]ch
 // Unspents fetches unspent outputs for the specified account.
 // Part of the Wallet interface.
 func (w *spvWallet) Unspents(ctx context.Context, accountName string) ([]*walletjson.ListUnspentResult, error) {
-	// Only VAR funds VAR transactions; nil would list every coin type.
+	unspents, err := w.listUnspent(ctx, accountName)
+	return slices.DeleteFunc(unspents, isStakerFee), err
+}
+
+// listUnspent lists the account's unspent VAR outputs, staker-fee ones
+// included. Only VAR funds VAR transactions; nil would list every coin type.
+func (w *spvWallet) listUnspent(ctx context.Context, accountName string) ([]*walletjson.ListUnspentResult, error) {
 	coinType := cointype.CoinTypeVAR
-	unspents, err := w.dcrWallet.ListUnspent(ctx, 0, math.MaxInt32, nil, accountName, &coinType)
-	// A staker-fee output can be respent by a miner without the owner's key.
-	return slices.DeleteFunc(unspents, func(u *walletjson.ListUnspentResult) bool {
-		return u.TxType == int(stake.TxTypeSSFee)
-	}), err
+	return w.dcrWallet.ListUnspent(ctx, 0, math.MaxInt32, nil, accountName, &coinType)
 }
 
 // LockUnspent locks or unlocks the specified outpoint.

@@ -149,7 +149,7 @@ fi
 ./alpha lockunspent true "$(jq -c '[.[0], .[2], .[3]] | map({txid, vout, tree})' <<<"${INS}")" >/dev/null
 
 # Consensus already rejects a block with fewer than 3 votes, so check for all 5:
-# alpha owns every ticket and mine-alpha waits for all of its votes.
+# mine-alpha waits for all of the votes, which alpha and staker cast.
 START=$(./alpha_node getblockcount)
 echo "height ${START}; mining 20 blocks"
 ./mine-alpha 20

@@ -81,18 +81,22 @@ premine and its own chain, so the harness mines from genesis.
   depend on exactly those checks, so without the flag their tests could not fail.
 - **Wallets**, all RPC-synced to alpha unless noted:
   - `alpha` holds the harness seed (mining address and the SKA1 emission address). It votes
-    and buys 5 tickets per block from height 34 while it holds fewer than the target pool,
-    320 tickets. The wallet's ticket buyer stays off: it grows the pool far past the target,
-    and the ticket price with it, until most VAR is locked in tickets.
+    and buys 5 tickets per block from height 34 while it holds fewer than 240, its share of
+    the target pool of 320 tickets. The wallet's ticket buyer stays off: it grows the pool far
+    past the target, and the ticket price with it, until most VAR is locked in tickets.
   - `trading1` and `trading2` are the trade tests' RPC wallets.
   - `spvwallet` is SPV-synced to alpha and beta. It is used by the item 6 test, which checks
     the external wallet's own SPV publish path.
+  - `staker` votes its own tickets for step 10. Funded with 3 outputs of 10 VAR at height 30, it
+    buys 5 tickets per block from height 34 while it holds fewer than 80, the rest of the pool.
+    Its purchases stop while `~/dextest/var/staker/hold` exists, since a purchase spends any
+    output, the ones step 10's test holds included.
 - **Files and ctl scripts:** `<name>/<name>.conf` per wallet, the file `simnet_trade.go`
   reads. In `harness-ctl/`: `./alpha`, `./alpha_node`, `./beta_node`, `./trading1`,
-  `./trading2`, `./spvwallet`, `./fund`, `./quit`, and `./mine-alpha N`. Past height 143,
-  `./mine-alpha N` waits before each block until all 5 votes are in the mempool. Simnet needs
-  3 of 5, but alpha owns every ticket, and votes left over from a block mined at 3 would count
-  toward the next one.
+  `./trading2`, `./spvwallet`, `./staker`, `./fund`, `./quit`, and `./mine-alpha N`. Past
+  height 143, `./mine-alpha N` waits before each block until all 5 votes are in the mempool.
+  Simnet needs 3 of 5, but alpha and staker own every ticket, and votes left over from a block
+  mined at 3 would count toward the next one.
 - **Chain build:**
   1. Mine to 34, buy tickets, and mine to 151 with votes.
   2. Emit SKA1 inside its window (heights 150-250): `importemissionkey` with the simnet
@@ -113,9 +117,6 @@ premine and its own chain, so the harness mines from genesis.
     64 bits.
 
   `spvwallet` gets the same VAR mix and SKA1 outputs.
-- **Optional with `VSP=1`, used only by step 10:** `monetarium-vsp` (`vspm`) on simnet, a
-  voting wallet behind it (`--enablevoting --manualtickets`), and a ticket-buying wallet that
-  uses it. It lands with step 10.
 
 **Done when** `dex/testing/var/check.sh` passes twice in a row from a clean `~/dextest/var`.
 It asserts:
@@ -172,13 +173,13 @@ theirs as they land. Upstream DCRDEX's CI runs no harness tests: `run_tests.sh` 
   4. From step 7 on, also run `go test -tags harness ./client/asset/mon/...`. This item is
      added with step 7, when `simnet_test.go` lands.
 - **Nightly job (new):**
-  - the BTC, LTC and `dcrdex` harnesses (with PostgreSQL, and `bitcoind`, `litecoind` and
-    `vspm` installed on the runner), and the step 8 trade tests on `varbtc`, `varltc` and
+  - the BTC, LTC and `dcrdex` harnesses (with PostgreSQL, and `bitcoind` and `litecoind`
+    installed on the runner), and the step 8 trade tests on `varbtc`, `varltc` and
     `varspvbtc`;
-  - the step 9 load runs and the step 10 VSP run.
+  - the step 9 load runs.
 
   These need nodes of other chains, or long runs, so they stay out of the per-PR job. A step 9
-  or step 10 run reports but gates nothing until that step is done.
+  run reports but gates nothing until that step is done.
 - **Gating:** the per-PR job becomes a required status check on `main` once it is green on
   `main`. That is a branch-protection change, made by the repo admin.
 - **Imported workflows:** the docker release workflow runs on every published release and
@@ -614,27 +615,50 @@ at.
 
 ## Step 10. Item 8: staker-fee outputs
 
-**Form:** harness with `VSP=1`, added in this step, which also pins the `monetarium-vsp`
-version in Versions. The DEX's RPC wallet is an external wallet that buys tickets
-through `vspm`, into the account the DEX funds orders from. The native SPV wallet would get
-staker-fee outputs only by staking through DCRDEX, which is out of scope. Its share of item 8
-is the unit test in step 6.
+**Form:** a harness test on step 1's `staker` wallet, the DEX's RPC wallet here, and a unit test
+for Balance. The wallet votes its own tickets, so each vote pays its staker fee to one address of
+its default account, the account the DEX funds orders from, and a later vote can respend that
+output (`invariants.md`, item 8).
+No VSP: the wallet takes a fresh commitment address for each ticket it buys, so its own VSP
+tickets never share one. The native SPV wallet cannot vote, and staking through DCRDEX is out of
+scope; its share of item 8 is the unit test in step 6 and the SPV case of
+`TestStakerFeeNotAvailable`.
 
 **Network:** simnet. Stake outputs mature after 16 blocks there (256 on mainnet). Before the
 port, the server accepts a staker-fee output once it is 16 blocks old. Step 4's
 `TestFundingCoinStakerFee` makes it refuse one.
 
+**Respends are rare on the harness:** 3 of 76 staker-fee transactions in blocks 150-216 of one
+run respent an earlier output (2026-11-22). The test cannot force one, so it requires none and
+logs how many it saw.
+
 **`TestStakerFeeRespend`:**
 
-- **Setup:** keep the RPC wallet's staker-fee outputs in the funding account. Book an order, then
-  let another ticket of the same commitment address vote; repeat after a match.
-- **Pass:**
-  - FundOrder never selects a staker-fee output, checked over 20 blocks of votes;
-  - the order stays booked;
-  - its swap confirms;
-  - the match is not revoked.
+- **Setup:** hold staker's purchases, and mine until it has no unconfirmed output. Lock every
+  output but its largest output of a regular transaction, U1, and the staker-fee outputs, and
+  fund an order of half U1 from U1 alone (`FundOrder`, no server). Then unlock the second
+  largest such output, U2. Mine until U2 and the staker-fee outputs together could fund an
+  order of U2's value at `MaxFeeRate` 10.
+- **Pass,** at each of 20 blocks that hold staker's votes and in which U2 and the staker-fee
+  outputs could still fund an order of U2's value, after locking every output matured since
+  the last lock, U2 and the staker-fee outputs aside:
+  - an order of U2's value is refused;
+  - an order of half of it funds from U2 alone;
+  - `Balance().Available` is U2's value;
+  - U1 is unspent at the node.
 
-**Done when** `TestStakerFeeRespend` passes with the RPC wallet.
+  Then the funded order's swap is mined within 3 blocks of its broadcast.
+- **What fails it:** the refused order fails if funding takes a staker-fee output, and
+  `Available` if Balance counts one. The funded order and its swap cannot fail that way: funding
+  never reaches a staker-fee output while U1 covers the order.
+
+**`Balance().Available`, `TestStakerFeeNotAvailable`:** the wallet counts matured staker-fee
+outputs in `getbalance`'s spendable amount, and funding never takes them, so `Available` leaves
+them out. Before this step, a withdrawal of all of `Available` could not be funded. Over the RPC
+and SPV seams, `getbalance` reports 16 VAR, 1 VAR of it in staker-fee outputs: `Available` must
+be 15 VAR, and an SKA staker-fee output is not subtracted.
+
+**Done when** both tests pass, `TestStakerFeeRespend` in the per-PR harness job.
 
 ## Item 11: Skarb stage, not the PoC
 
@@ -686,4 +710,4 @@ The PR merges the tag, not the branch head, which can be ahead of the last relea
 - **Step 7:** needs steps 1 and 6.
 - **Step 8:** needs steps 1, 4 and 6, plus the `dcrdex` and BTC/LTC harnesses.
 - **Step 9:** needs steps 7 and 8.
-- **Step 10:** needs step 8.
+- **Step 10:** needs step 7.

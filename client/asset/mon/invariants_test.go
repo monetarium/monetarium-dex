@@ -433,6 +433,88 @@ func TestSPVStakerFeeNotSelected(t *testing.T) {
 	}
 }
 
+// TestStakerFeeNotAvailable is item 8 in Balance: the wallet counts a matured
+// staker-fee output as spendable, and funding never takes one, so Available
+// leaves it out. Otherwise a withdrawal of all of Available cannot be funded.
+// An SKA staker-fee output is not in the VAR balance at all, nor is one the
+// wallet lists as not spendable; a vote's reward funds orders and stays in.
+func TestStakerFeeNotAvailable(t *testing.T) {
+	for name, newSeam := range map[string]func([]walletjson.ListUnspentResult) *tSeam{"rpc": tRPCSeam, "spv": tSPVSeam} {
+		ska, unspendable := tStakerFeeUnspent(t, 22, "1", 1000), tStakerFeeUnspent(t, 23, "2", 1000)
+		ska.CoinType, unspendable.Spendable = 1, false
+		vote := tStakerFeeUnspent(t, 1, "3", 1000) // a vote's reward funds orders, so it stays in Available
+		vote.TxType = int(stake.TxTypeSSGen)
+		seam := newSeam([]walletjson.ListUnspentResult{*tUnspent(0, "12"), *vote,
+			*tStakerFeeUnspent(t, 20, "0.75", 16), *tStakerFeeUnspent(t, 21, "0.25", 1000), *ska, *unspendable})
+		bal, err := seam.w.Balance() // getbalance reports 16 VAR spendable, the staker fees included
+		seam.shutdown()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if bal.Available != 15e8 {
+			t.Errorf("%s: Available %d, want 15e8: the 1 VAR of staker-fee outputs left out", name, bal.Available)
+		}
+	}
+
+	// A block between getbalance and listunspent matured more staker fees than getbalance's
+	// spendable amount: each wallet's AccountBalance stops at 0, without an error.
+	rw, rnode, rshutdown := tNewWallet()
+	defer rshutdown()
+	rnode.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("0.5")}}
+	rnode.unspent = []walletjson.ListUnspentResult{*tStakerFeeUnspent(t, 20, "0.75", 16)}
+	if bal, err := rw.Balance(); err != nil || bal.Available != 0 {
+		t.Errorf("rpc: staker fees above spendable: Available %+v (%v), want 0", bal, err)
+	}
+	nw, dcrw, nshutdown := tNewNativeWallet()
+	defer nshutdown()
+	dcrw.acctBal = wallet.Balances{Spendable: 5e7, Total: 5e7}
+	dcrw.unspents = []*walletjson.ListUnspentResult{tStakerFeeUnspent(t, 20, "0.75", 16)}
+	if bal, err := nw.Balance(); err != nil || bal.Available != 0 {
+		t.Errorf("spv: staker fees above spendable: Available %+v (%v), want 0", bal, err)
+	}
+
+	// A listunspent that fails, or lists a staker-fee amount that does not parse, fails Balance
+	// rather than leave the staker fees in Available.
+	bad := tStakerFeeUnspent(t, 20, "0.123456789", 16)
+	rnode.unspentErr, dcrw.listUnspentErr = tErr, tErr
+	if _, err := rw.Balance(); err == nil {
+		t.Error("rpc: Balance with listunspent failing: no error")
+	}
+	if _, err := nw.Balance(); err == nil {
+		t.Error("spv: Balance with listunspent failing: no error")
+	}
+	rnode.unspentErr, dcrw.listUnspentErr = nil, nil
+	rnode.unspent, dcrw.unspents = []walletjson.ListUnspentResult{*bad}, []*walletjson.ListUnspentResult{bad}
+	if _, err := rw.Balance(); err == nil {
+		t.Error("rpc: Balance with a staker-fee amount of 9 decimals: no error")
+	}
+	if _, err := nw.Balance(); err == nil {
+		t.Error("spv: Balance with a staker-fee amount of 9 decimals: no error")
+	}
+
+	// A block between getbalance and listunspent matured a staker-fee output that getbalance
+	// did not count, with all the regular VAR locked: Available is 0, not wrapped past it.
+	wallet, node, shutdown := tNewWallet()
+	defer shutdown()
+	node.balanceResult = &walletjson.GetBalanceResult{Balances: []walletjson.GetAccountBalanceResult{tAcctBal("1")}}
+	node.unspent = []walletjson.ListUnspentResult{*tStakerFeeUnspent(t, 20, "0.5", 16)}
+	node.lluCoins = []walletjson.ListUnspentResult{*tUnspent(0, "1")}
+	if bal, err := wallet.Balance(); err != nil || bal.Available != 0 {
+		t.Errorf("staker fees matured between the calls: Available %+v (%v), want 0", bal, err)
+	}
+	// The same in the trading account, read on its own with mixing on.
+	wallet.wallet.(*rpcWallet).accountsV.Store(tTestAccounts)
+	trading, unmixed := tAcctBal("1"), tAcctBal("0")
+	trading.AccountName, unmixed.AccountName = tTestAccounts.TradingAccount, tTestAccounts.UnmixedAccount
+	node.balanceResult.Balances = []walletjson.GetAccountBalanceResult{tAcctBal("0"), unmixed, trading}
+	for _, u := range []*walletjson.ListUnspentResult{&node.unspent[0], &node.lluCoins[0]} {
+		u.Account = tTestAccounts.TradingAccount
+	}
+	if bal, err := wallet.Balance(); err != nil || bal.Available != 0 {
+		t.Errorf("trading account, staker fees matured between the calls: Available %+v (%v), want 0", bal, err)
+	}
+}
+
 // tStakerFeeUnspent is a matured staker-fee output paying tPKHAddr, as the
 // wallet lists it.
 func tStakerFeeUnspent(t *testing.T, vout uint32, amt string, confs int64) *walletjson.ListUnspentResult {
@@ -641,10 +723,12 @@ func tRPCSeam(fx []walletjson.ListUnspentResult) *tSeam {
 	wallet.wallet.(*rpcWallet).accountsV.Store(tTestAccounts)
 	node.unspent = fx
 	node.newAddr, node.changeAddr = tPKHAddr, tPKHAddr
-	unmixed, trading := tAcctBal("0"), tAcctBal("0")
+	sf := tStakerFeeSums(fx)
+	primary := tAcctBal(varAtomsToDecimalString(dcrutil.Amount(15e8 + sf[tTestAccounts.PrimaryAccount])))
+	unmixed, trading := tAcctBal("0"), tAcctBal(varAtomsToDecimalString(dcrutil.Amount(sf[tTestAccounts.TradingAccount])))
 	unmixed.AccountName, trading.AccountName = tTestAccounts.UnmixedAccount, tTestAccounts.TradingAccount
 	node.balanceResult = &walletjson.GetBalanceResult{
-		Balances: []walletjson.GetAccountBalanceResult{tAcctBal("15"), unmixed, trading},
+		Balances: []walletjson.GetAccountBalanceResult{primary, unmixed, trading},
 	}
 	return &tSeam{w: wallet, shutdown: shutdown,
 		locked: func() []*wire.OutPoint { return node.lockedCoins },
@@ -660,11 +744,30 @@ func tSPVSeam(fx []walletjson.ListUnspentResult) *tSeam {
 		dcrw.unspents = append(dcrw.unspents, &fx[i])
 	}
 	dcrw.acctNums = map[string]uint32{tTestAccounts.PrimaryAccount: 0, tTestAccounts.UnmixedAccount: 1, tTestAccounts.TradingAccount: 2}
-	dcrw.acctBals = map[uint32]wallet.Balances{1: {}, 2: {}} // the primary keeps the default 15 VAR
+	sf := tStakerFeeSums(fx)
+	dcrw.acctBals = map[uint32]wallet.Balances{
+		0: {Spendable: dcrutil.Amount(15e8 + sf[tTestAccounts.PrimaryAccount]), Total: dcrutil.Amount(15e8 + sf[tTestAccounts.PrimaryAccount])}, 1: {},
+		2: {Spendable: dcrutil.Amount(sf[tTestAccounts.TradingAccount])}}
 	return &tSeam{w: nw.ExchangeWallet, shutdown: shutdown,
 		locked: func() []*wire.OutPoint { return dcrw.lockedOutpoints },
 		sent:   func() []*wire.MsgTx { return dcrw.sentTxs },
 	}
+}
+
+// tStakerFeeSums sums fx's VAR staker-fee outputs per account: the wallet
+// counts them in getbalance's spendable, so the seams' balances do too.
+func tStakerFeeSums(fx []walletjson.ListUnspentResult) map[string]uint64 {
+	sums := make(map[string]uint64)
+	for i := range fx {
+		if u := &fx[i]; isStakerFee(u) && u.CoinType == 0 && u.Spendable {
+			v, err := coinStrToAtoms(u.Amount)
+			if err != nil {
+				panic(err)
+			}
+			sums[u.Account] += v
+		}
+	}
+	return sums
 }
 
 // verifyFlags are the node's standard script flags: mempool's
