@@ -1,0 +1,235 @@
+# Nightly VAR trade tests on the BTC, LTC and dcrdex harnesses: docs/var-port/plan.md,
+# step 1a. They need other chains' nodes and long runs, so they stay out of the per-PR job.
+# A PR that edits this file runs it too, since schedule and dispatch only see main.
+name: VAR nightly
+on:
+  schedule:
+    - cron: '37 3 * * *' # off the round hours, when scheduled runs pile up
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/var-nightly.yml]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash # -o pipefail, which the default shell leaves out
+jobs:
+  trade:
+    name: VAR trade tests (${{ matrix.run }})
+    runs-on: ubuntu-latest
+    # Above the timed steps' sum, so a hung step still leaves the log dump.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        # step8: the step 8 trade tests on all three VAR markets, no load.
+        # load: step 9, the trade tests and TestLargeSwapUnderLoad under SKA1 and VAR load.
+        run: [step8, load]
+    env:
+      # The pins in plan.md, Versions; the same binary cache as the per-PR harness job.
+      NODE_VERSION: v1.3.14
+      WALLET_VERSION: 42aa5102b0a29e9e741cad6532d8fce749f120fa
+      CTL_VERSION: v1.3.14
+      VAR_BIN: ${{ github.workspace }}/bin-var
+      # Core 30 and later cannot create the legacy wallets dex/testing/btc seeds with
+      # sethdseed. The hashes are from each release's signed SHA256SUMS.
+      BTC_VERSION: '29.5'
+      BTC_SHA256: 09a6d539c32186efc1dbda8808a70be35b8f0b44632cb51c77181d6caa0bd791
+      LTC_VERSION: 0.21.4
+      LTC_SHA256: 857fc41091f2bae65c3bf0fd4d388fca915fc93a03f16dd2578ac3cc92898390
+      CHAIN_BIN: ${{ github.workspace }}/bin-chains
+      # Step 9's VAR market caps the fee rate at 100 instead of step 8's 10. Job-wide:
+      # genmarkets-var.sh reads it in a tmux pane, whose environment is the tmux
+      # server's, started by the VAR harness step.
+      VAR_MAX_FEE_RATE: ${{ matrix.run == 'load' && 100 || 10 }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 #v6.0.0
+
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c #v6.1.0
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Restore binaries
+        id: bin
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
+        with:
+          path: ${{ env.VAR_BIN }}
+          key: var-bin-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-${{ env.WALLET_VERSION }}-${{ env.CTL_VERSION }}
+
+      - name: Build binaries
+        if: steps.bin.outputs.cache-hit != 'true'
+        env:
+          GOBIN: ${{ env.VAR_BIN }}
+        run: |
+          go install github.com/monetarium/monetarium-node@"$NODE_VERSION"
+          go install github.com/monetarium/monetarium-wallet@"$WALLET_VERSION"
+          go install github.com/monetarium/monetarium-ctl@"$CTL_VERSION"
+
+      - name: Save binaries
+        if: steps.bin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
+        with:
+          path: ${{ env.VAR_BIN }}
+          key: ${{ steps.bin.outputs.cache-primary-key }}
+
+      - name: Show binary versions
+        run: go version -m "$VAR_BIN"/* | grep -E '^\S|^\s+mod\s'
+
+      - name: Restore Bitcoin and Litecoin Core
+        id: chains
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
+        with:
+          path: ${{ env.CHAIN_BIN }}
+          key: chain-bin-${{ runner.os }}-${{ runner.arch }}-btc${{ env.BTC_VERSION }}-ltc${{ env.LTC_VERSION }}
+
+      - name: Download Bitcoin and Litecoin Core
+        if: steps.chains.outputs.cache-hit != 'true'
+        run: |
+          d=$(mktemp -d)
+          curl -fsSL -o "$d/btc.tgz" "https://bitcoincore.org/bin/bitcoin-core-$BTC_VERSION/bitcoin-$BTC_VERSION-x86_64-linux-gnu.tar.gz"
+          curl -fsSL -o "$d/ltc.tgz" "https://download.litecoin.org/litecoin-$LTC_VERSION/linux/litecoin-$LTC_VERSION-x86_64-linux-gnu.tar.gz"
+          printf '%s  %s\n' "$BTC_SHA256" "$d/btc.tgz" "$LTC_SHA256" "$d/ltc.tgz" | sha256sum -c
+          mkdir -p "$CHAIN_BIN"
+          tar -xzf "$d/btc.tgz" -C "$CHAIN_BIN" --strip-components=2 "bitcoin-$BTC_VERSION/bin/bitcoind" "bitcoin-$BTC_VERSION/bin/bitcoin-cli"
+          tar -xzf "$d/ltc.tgz" -C "$CHAIN_BIN" --strip-components=2 "litecoin-$LTC_VERSION/bin/litecoind" "litecoin-$LTC_VERSION/bin/litecoin-cli"
+
+      - name: Save Bitcoin and Litecoin Core
+        if: steps.chains.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
+        with:
+          path: ${{ env.CHAIN_BIN }}
+          key: ${{ steps.chains.outputs.cache-primary-key }}
+
+      # The BTC and LTC harness-ctl scripts and the trade tests call the CLIs from PATH.
+      - name: Set up the runner
+        run: |
+          echo "$CHAIN_BIN" >> "$GITHUB_PATH"
+          "$CHAIN_BIN/bitcoind" -version | head -1
+          "$CHAIN_BIN/litecoind" -version | head -1
+          sudo apt-get update -q && sudo apt-get install -yq tmux bc
+          # dex/testing/dcrdex/harness.sh recreates its database as the postgres user.
+          sudo systemctl start postgresql.service
+          sudo -u postgres psql -c "CREATE ROLE dcrdex LOGIN PASSWORD 'dcrdex'"
+
+      - name: Start the VAR harness
+        timeout-minutes: 20
+        run: dex/testing/var/harness.sh
+
+      # The upstream harnesses end on tmux attach, which fails without a terminal:
+      # readiness is checked instead of their exit status.
+      - name: Start the BTC harness
+        timeout-minutes: 15
+        working-directory: dex/testing/btc
+        run: |
+          ./harness.sh </dev/null >/tmp/btc-harness.log 2>&1 || true
+          for _ in $(seq 30); do ~/dextest/btc/harness-ctl/alpha getblockcount && exit 0; sleep 2; done
+          exit 1
+
+      - name: Start the LTC harness
+        if: matrix.run == 'step8'
+        timeout-minutes: 15
+        working-directory: dex/testing/ltc
+        run: |
+          ./harness.sh </dev/null >/tmp/ltc-harness.log 2>&1 || true
+          for _ in $(seq 30); do ~/dextest/ltc/harness-ctl/alpha getblockcount && exit 0; sleep 2; done
+          exit 1
+
+      - name: Start the dcrdex harness
+        timeout-minutes: 15
+        working-directory: dex/testing/dcrdex
+        env:
+          PG_PASS: dcrdex
+        run: |
+          ./harness.sh </dev/null >/tmp/dcrdex-harness.log 2>&1 || true
+          for i in $(seq 60); do
+            tmux capture-pane -p -S - -t dcrdex-harness:0 | grep -q 'now accepting orders' && break
+            [ "$i" -lt 60 ] || exit 1
+            sleep 2
+          done
+          jq -c '{markets: [.markets[] | "\(.base)/\(.quote)"], var: .assets.VAR_simnet.maxFeeRate}' ~/dextest/dcrdex/markets.json
+          [ "$(jq '.assets.VAR_simnet.maxFeeRate' ~/dextest/dcrdex/markets.json)" = "$VAR_MAX_FEE_RATE" ]
+
+      # Each test but orderstatus runs with client 1 as maker and then as taker. run exits 0 on an
+      # unknown program, so each step requires the tool's SUCCESS line.
+      - name: Trade tests, varbtc
+        if: matrix.run == 'step8'
+        timeout-minutes: 50
+        working-directory: client/cmd/simnet-trade-tests
+        run: ./run varbtc --all | tee /tmp/varbtc.log && grep -q '^SUCCESS!$' /tmp/varbtc.log
+
+      - name: Trade tests, varltc
+        if: matrix.run == 'step8'
+        timeout-minutes: 50
+        working-directory: client/cmd/simnet-trade-tests
+        run: ./run varltc --all | tee /tmp/varltc.log && grep -q '^SUCCESS!$' /tmp/varltc.log
+
+      - name: Trade tests, varspvbtc
+        if: matrix.run == 'step8'
+        timeout-minutes: 50
+        working-directory: client/cmd/simnet-trade-tests
+        run: ./run varspvbtc --all | tee /tmp/varspvbtc.log && grep -q '^SUCCESS!$' /tmp/varspvbtc.log
+
+      # FROM skips one block: a block the background miner had started before the load
+      # came on can land after the height is read.
+      - name: Turn the load on
+        if: matrix.run == 'load'
+        timeout-minutes: 10
+        run: |
+          ~/dextest/var/harness-ctl/load on
+          echo "LOAD_FROM=$(($(~/dextest/var/harness-ctl/alpha_node getblockcount) + 2))" >> "$GITHUB_ENV"
+
+      - name: Trade tests under load, varbtc
+        if: matrix.run == 'load'
+        timeout-minutes: 50
+        working-directory: client/cmd/simnet-trade-tests
+        run: |
+          ./run varbtc -t success -t nomakerredeem -t notakerswap | tee /tmp/load.log
+          grep -q '^SUCCESS!$' /tmp/load.log
+
+      # The test skips with the load off, so its PASS line is required.
+      - name: TestLargeSwapUnderLoad
+        if: matrix.run == 'load'
+        timeout-minutes: 45
+        run: |
+          go test -count=1 -tags harness -run 'TestLargeSwapUnderLoad$' -v -timeout 40m ./client/asset/mon/ > /tmp/large.log 2>&1 || true
+          grep -E '_test.go:|^(---|ok|FAIL)' /tmp/large.log
+          grep -q '^--- PASS: TestLargeSwapUnderLoad' /tmp/large.log
+
+      # check reads the row the load writes before the block after the last one checked:
+      # wait for two more blocks, so that row exists and the last sends had a block.
+      # report runs to the tip, so a send mined in those blocks is judged too.
+      - name: Every block under load, every swap, redeem and refund within 3 blocks
+        if: matrix.run == 'load'
+        timeout-minutes: 10
+        run: |
+          cd ~/dextest/var/harness-ctl
+          to=$(./alpha_node getblockcount)
+          until [ "$(./alpha_node getblockcount)" -ge $((to + 2)) ]; do sleep 5; done
+          ./load check "$LOAD_FROM" "$to"
+          ./load report "$LOAD_FROM" "$(./alpha_node getblockcount)" swap redeem refund
+
+      - name: Dump tmux windows
+        if: failure()
+        run: |
+          for s in $(tmux list-sessions -F '#S' 2>/dev/null); do
+            for w in $(tmux list-windows -t "$s" -F '#I' 2>/dev/null); do
+              echo "===== $s:$w"; tmux capture-pane -p -S - -t "$s:$w"
+            done
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 #v7.0.2
+        if: failure()
+        with:
+          name: var-nightly-${{ matrix.run }}-logs
+          path: |
+            /tmp/*.log
+            ~/dextest/var/*/logs/simnet/*.log
+            ~/dextest/var/*/log/simnet/*.log
+            ~/dextest/var/*/create.log
+            ~/dextest/var/load/
+            ~/dextest/btc/*/regtest/debug.log
+            ~/dextest/ltc/*/regtest/debug.log
+            ~/dextest/dcrdex/logs/
+          retention-days: 7
