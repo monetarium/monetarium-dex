@@ -437,14 +437,15 @@ func TestSPVStakerFeeNotSelected(t *testing.T) {
 // staker-fee output as spendable, and funding never takes one, so Available
 // leaves it out. Otherwise a withdrawal of all of Available cannot be funded.
 // An SKA staker-fee output is not in the VAR balance at all, nor is one the
-// wallet lists as not spendable; a vote's reward funds orders and stays in.
+// wallet lists as not spendable; a vote's reward and a revocation's output
+// fund orders and stay in.
 func TestStakerFeeNotAvailable(t *testing.T) {
 	for name, newSeam := range map[string]func([]walletjson.ListUnspentResult) *tSeam{"rpc": tRPCSeam, "spv": tSPVSeam} {
 		ska, unspendable := tStakerFeeUnspent(t, 22, "1", 1000), tStakerFeeUnspent(t, 23, "2", 1000)
 		ska.CoinType, unspendable.Spendable = 1, false
-		vote := tStakerFeeUnspent(t, 1, "3", 1000) // a vote's reward funds orders, so it stays in Available
-		vote.TxType = int(stake.TxTypeSSGen)
-		seam := newSeam([]walletjson.ListUnspentResult{*tUnspent(0, "12"), *vote,
+		vote, revocation := tStakerFeeUnspent(t, 1, "3", 1000), tStakerFeeUnspent(t, 2, "1", 1000)
+		vote.TxType, revocation.TxType = int(stake.TxTypeSSGen), int(stake.TxTypeSSRtx)
+		seam := newSeam([]walletjson.ListUnspentResult{*tUnspent(0, "11"), *vote, *revocation,
 			*tStakerFeeUnspent(t, 20, "0.75", 16), *tStakerFeeUnspent(t, 21, "0.25", 1000), *ska, *unspendable})
 		bal, err := seam.w.Balance() // getbalance reports 16 VAR spendable, the staker fees included
 		seam.shutdown()
