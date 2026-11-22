@@ -9,10 +9,13 @@ package mon
 // the network accepted.
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"math"
 	"math/rand/v2"
@@ -27,10 +30,12 @@ import (
 
 	"decred.org/dcrdex/client/asset"
 	"decred.org/dcrdex/dex"
+	"decred.org/dcrdex/dex/calc"
 	"decred.org/dcrdex/dex/config"
 	"decred.org/dcrdex/dex/encode"
 	dexmon "decred.org/dcrdex/dex/networks/mon"
 	dcrsecp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/monetarium/monetarium-node/blockchain/stake"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/chaincfg/chainhash"
 	"github.com/monetarium/monetarium-node/cointype"
@@ -1042,4 +1047,242 @@ func TestLargeSwapUnderLoad(t *testing.T) {
 	}
 	mine(t, 1) // the step before the next block records the last one's load
 	mustCtl(t, "load", "check", strconv.FormatInt(from+1, 10), strconv.FormatInt(at, 10))
+}
+
+// TestStakerFeeRespend is item 8 on the network. The staker wallet votes its own
+// tickets, so each of its votes pays a staker fee to one address of the account
+// the DEX funds from. Any miner can respend such an output in a block, without
+// the owner's key; respends are rare on the harness, so none is required here.
+// With every other output locked, funding can reach the staker-fee outputs; over
+// 20 blocks that hold staker's votes, at each one:
+//   - an order U2 alone cannot fund is refused, though U2 and the staker-fee
+//     outputs could fund it;
+//   - a smaller order funds from U2 alone;
+//   - Available is U2's value, the staker-fee outputs left out;
+//   - the coin a funded order holds, U1, is unspent at the node.
+//
+// Then the funded order's swap must be mined within 3 blocks. The refused order
+// and Available are the checks that fail when funding or Balance takes a
+// staker-fee output; while U1 covers its order, funding never reaches one.
+func TestStakerFeeRespend(t *testing.T) {
+	const (
+		votedBlocks = 20
+		maxFeeRate  = 10 // the VAR market's, with the load off (genmarkets-var.sh)
+		maxBlocks   = 3
+	)
+	// mine-alpha buys no staker tickets while the file exists: a purchase
+	// spends any output it can, the ones this test holds included.
+	hold := filepath.Join(harnessDir(), "staker", "hold")
+	if err := os.WriteFile(hold, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(hold) })
+	tw := tRPCWalletNamed(t, "staker", "staker")
+	w := tw.w
+
+	var locked []*wire.OutPoint
+	t.Cleanup(func() {
+		if len(locked) > 0 { // an empty list unlocks every output
+			w.wallet.LockUnspent(tCtx, true, locked)
+		}
+	})
+	atoms := func(u *walletjson.ListUnspentResult) uint64 {
+		v, err := coinStrToAtoms(u.Amount)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	opOf := func(u *walletjson.ListUnspentResult) outPoint {
+		h, err := chainhash.NewHashFromStr(u.TxID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return newOutPoint(h, u.Vout)
+	}
+	// lockAllBut locks every spendable VAR output but keep and the staker-fee
+	// ones, and returns those staker-fee outputs.
+	lockAllBut := func(keep outPoint) (fees []*walletjson.ListUnspentResult) {
+		var ops []*wire.OutPoint
+		for _, u := range unspents(t, tw, cointype.CoinTypeVAR) {
+			switch op := opOf(u); {
+			case !u.Spendable || op == keep:
+			case isStakerFee(u):
+				fees = append(fees, u)
+			default:
+				ops = append(ops, wire.NewOutPoint(&op.txHash, op.vout, u.Tree))
+			}
+		}
+		if len(ops) > 0 {
+			if err := w.wallet.LockUnspent(tCtx, false, ops); err != nil {
+				t.Fatal(err)
+			}
+			locked = append(locked, ops...)
+		}
+		return fees
+	}
+	// reaches is whether u2 and the staker-fee outputs, largest first as funding
+	// takes them, cover an order of u2's whole value.
+	reaches := func(u2 uint64, fees []*walletjson.ListUnspentResult) bool {
+		vals := make([]uint64, len(fees))
+		for i, u := range fees {
+			vals[i] = atoms(u)
+		}
+		slices.Sort(vals)
+		sum := u2
+		for n := uint64(1); len(vals) > 0; n++ {
+			sum, vals = sum+vals[len(vals)-1], vals[:len(vals)-1]
+			if sum >= calc.RequiredOrderFunds(u2, (n+1)*dexmon.P2PKHInputSize, 1, dexmon.InitTxSizeBase, dexmon.InitTxSize, maxFeeRate) {
+				return true
+			}
+		}
+		return false
+	}
+	tip := func() string { return mustCtl(t, "alpha_node", "getbestblockhash") }
+	onTip := func(at string) func() bool {
+		return func() bool { return strings.Contains(mustCtl(t, "staker", "getbestblock"), at) }
+	}
+	order := func(val uint64) *asset.Order {
+		return &asset.Order{Version: version, Value: val, MaxSwapCount: 1, MaxFeeRate: maxFeeRate, FeeSuggestion: maxFeeRate}
+	}
+
+	// A purchase that started before the hold file is mined before the test reads the outputs.
+	waitFor(t, "staker's purchases mined", 2*time.Minute, func() bool {
+		for _, u := range unspents(t, tw, cointype.CoinTypeVAR) {
+			if u.Confirmations == 0 {
+				mine(t, 1)
+				return false
+			}
+		}
+		return true
+	})
+	var regular []*walletjson.ListUnspentResult
+	for _, u := range unspents(t, tw, cointype.CoinTypeVAR) {
+		if u.Spendable && u.TxType == int(stake.TxTypeRegular) {
+			regular = append(regular, u)
+		}
+	}
+	if len(regular) < 2 {
+		t.Fatalf("staker has %d regular VAR outputs, want 2", len(regular))
+	}
+	slices.SortFunc(regular, func(a, b *walletjson.ListUnspentResult) int { return cmp.Compare(atoms(b), atoms(a)) })
+	u1, u2 := regular[0], regular[1]
+	u1Val, u2Val, u2Op := atoms(u1), atoms(u2), opOf(u2)
+
+	// The funded order, on U1 alone: an order the DEX holds while votes come in.
+	lockAllBut(opOf(u1))
+	booked, _, _, err := w.FundOrder(order(u1Val / 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { w.ReturnCoins(booked) }) // spent coins error
+	if len(booked) != 1 || booked[0].Value() != u1Val {
+		t.Fatalf("order funded from %v, want U1 alone (%d atoms)", booked, u1Val)
+	}
+	u2Wire := wire.NewOutPoint(&u2Op.txHash, u2Op.vout, u2.Tree)
+	if err := w.wallet.LockUnspent(tCtx, true, []*wire.OutPoint{u2Wire}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, "staker-fee outputs that reach an order of U2's value", 2*time.Minute, func() bool {
+		if reaches(u2Val, lockAllBut(u2Op)) {
+			return true
+		}
+		mine(t, 1)
+		return false
+	})
+
+	voted := func() int64 {
+		var si struct {
+			Voted int64 `json:"voted"`
+		}
+		if err := json.Unmarshal([]byte(mustCtl(t, "staker", "getstakeinfo")), &si); err != nil {
+			t.Fatal(err)
+		}
+		return si.Voted
+	}
+	seen := make(map[outPoint]*walletjson.ListUnspentResult) // staker-fee outputs listed so far
+	var checked, blocks, skipped, respent int
+	for lastVoted := voted(); checked < votedBlocks; {
+		if blocks++; blocks > 4*votedBlocks {
+			t.Fatalf("%d blocks checked with staker's votes in %d (%d more skipped: a block came mid-check, or the staker-fee outputs were respent)",
+				checked, blocks, skipped)
+		}
+		mine(t, 1)
+		at := tip()
+		waitFor(t, "staker on tip", 30*time.Second, onTip(at))
+		if v := voted(); v == lastVoted {
+			continue
+		} else {
+			lastVoted = v
+		}
+		// A block mined during the checks matures more outputs: run them again then.
+		fees := lockAllBut(u2Op)
+		var fail string
+		if !reaches(u2Val, fees) { // the fees were respent into an output not yet matured
+			skipped++
+			continue
+		}
+		if coins, _, _, err := w.FundOrder(order(u2Val)); err == nil {
+			w.ReturnCoins(coins)
+			fail = fmt.Sprintf("order of U2's value funded from %v", coins)
+		} else if coins, _, _, err := w.FundOrder(order(u2Val / 2)); err != nil {
+			fail = fmt.Sprintf("order of half U2's value: %v", err)
+		} else if w.ReturnCoins(coins); len(coins) != 1 || !bytes.Equal(coins[0].ID(), toCoinID(&u2Op.txHash, u2Op.vout)) {
+			fail = fmt.Sprintf("order of half U2's value funded from %v, want U2 alone", coins)
+		} else if bal, err := w.Balance(); err != nil || bal.Available != u2Val {
+			fail = fmt.Sprintf("Available %+v (%v), want U2's %d atoms", bal, err, u2Val)
+		} else if out := mustCtl(t, "alpha_node", "gettxout", u1.TxID, strconv.Itoa(int(u1.Vout)), strconv.Itoa(int(u1.Tree)), "true"); out == "" || out == "null" {
+			fail = "the funded order's U1 is spent"
+		}
+		if tip() != at {
+			skipped++
+			continue
+		}
+		if fail != "" {
+			t.Fatalf("block %s: %s", at, fail)
+		}
+		for op, u := range seen {
+			if out := mustCtl(t, "alpha_node", "gettxout", u.TxID, strconv.Itoa(int(u.Vout)), strconv.Itoa(int(u.Tree)), "true"); out == "" || out == "null" {
+				respent++ // nothing of staker's spends them while its purchases are held
+				delete(seen, op)
+			}
+		}
+		for _, u := range fees {
+			seen[opOf(u)] = u
+		}
+		checked++
+	}
+
+	self, err := w.DepositAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, err := strconv.ParseInt(mustCtl(t, "alpha_node", "getblockcount"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretHash := sha256.Sum256(encode.RandomBytes(32))
+	receipts, _, _, err := w.Swap(&asset.Swaps{Version: version, Inputs: booked,
+		Contracts: []*asset.Contract{{Address: self, Value: u1Val / 2, SecretHash: secretHash[:],
+			LockTime: uint64(time.Now().Add(time.Hour).Unix())}},
+		FeeRate: maxFeeRate})
+	if err != nil {
+		t.Fatalf("swap: %v", err)
+	}
+	h := coinTxid(t, "swap", receipts[0].Coin().ID())
+	accepted(t, "swap", h)
+	var at int64
+	for at = minedAt(t, h.String()); at == 0; at = minedAt(t, h.String()) {
+		tipH, err := strconv.ParseInt(mustCtl(t, "alpha_node", "getblockcount"), 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tipH >= from+maxBlocks {
+			t.Fatalf("swap %s broadcast at %d, unmined at %d", h, from, tipH)
+		}
+		mine(t, 1)
+	}
+	t.Logf("%d blocks with staker's votes in %d; %d staker-fee outputs respent; swap %s mined %d blocks after its broadcast",
+		checked, blocks, respent, h, at-from)
 }

@@ -1192,8 +1192,12 @@ func (dcr *ExchangeWallet) balance() (*asset.Balance, error) {
 		}
 		return v
 	}
+	// getbalance, listunspent and listlockunspent are separate calls, and a block
+	// between them can leave locked above spendable: saturate, never wrap. One that
+	// respends a staker-fee output leaves Available over by it until the next read.
+	spendable := atoms(ab.Spendable)
 	bal := &asset.Balance{
-		Available: atoms(ab.Spendable) - locked,
+		Available: spendable - min(locked, spendable),
 		Immature: atoms(ab.ImmatureCoinbaseRewards) +
 			atoms(ab.ImmatureStakeGeneration),
 		Locked: locked + atoms(ab.LockedByTickets),
@@ -1225,7 +1229,8 @@ func (dcr *ExchangeWallet) balance() (*asset.Balance, error) {
 		return nil, err
 	}
 
-	bal.Available += atoms(tradingAcctBal.Spendable) - tradingAcctLocked
+	tradingSpendable := atoms(tradingAcctBal.Spendable)
+	bal.Available += tradingSpendable - min(tradingAcctLocked, tradingSpendable)
 	bal.Immature += atoms(unmixedAcctBal.Total)
 	bal.Locked += tradingAcctLocked
 
@@ -6955,6 +6960,28 @@ func coinStrToAtoms(s string) (uint64, error) {
 		return 0, fmt.Errorf("VAR amount %q out of range", s)
 	}
 	return atoms.Uint64(), nil
+}
+
+// isStakerFee reports an output of a staker-fee transaction. Any miner can
+// respend one in a block without the owner's key, so it never funds a DEX
+// transaction.
+func isStakerFee(u *walletjson.ListUnspentResult) bool { return u.TxType == int(stake.TxTypeSSFee) }
+
+// stakerFeeAtoms sums the spendable VAR staker-fee outputs in unspents. The
+// wallet counts them in its spendable balance, which funding cannot reach.
+func stakerFeeAtoms(unspents []*walletjson.ListUnspentResult) (uint64, error) {
+	var sum uint64
+	for _, u := range unspents {
+		if u.CoinType != uint8(cointype.CoinTypeVAR) || !u.Spendable || !isStakerFee(u) {
+			continue
+		}
+		v, err := coinStrToAtoms(u.Amount)
+		if err != nil {
+			return 0, err
+		}
+		sum += v
+	}
+	return sum, nil
 }
 
 // toCoinID converts the tx hash and vout to a coin ID, as a []byte.

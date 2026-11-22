@@ -175,12 +175,26 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 - **Why it can break:** VAR staker fees are paid by a separate staker-fee transaction, which
   any miner can respend into a new output to the same script without the owner's key
   ("augment") (NODE [`internal/blockchain/validate.go:3933-3975`][node:internal/blockchain/validate.go:3933-3975], checked). The owner keeps
-  the value, but the specific coin disappears. A VSP voting wallet pays a ticket's staker fees
-  to the ticket's commitment address, i.e. the buyer's (WAL `v1.3.14`
-  [`wallet/chainntfns.go:731-768`][wallet-v1.3.14:wallet/chainntfns.go:731-768], checked; the mainnet VSP runs `v1.3.14`). DCRDEX buys
-  tickets with that address in its primary account, which it funds orders from (client
-  [`spv.go:1065-1084`][dex:client/asset/dcr/spv.go:1065-1084]). Within one block template a regular
-  spend already placed wins; one still in the mempool loses and becomes a double spend (NODE
+  the value, but the specific coin disappears. Only the staker-fee transaction of a later vote
+  that pays the same address can respend it.
+  - **A wallet voting its own tickets** pays every vote's staker fee to one consolidation
+    address of the ticket's account: by default the account's first external address, or
+    whatever address `setvotefeeconsolidationaddress` set (WAL
+    [`wallet/chainntfns.go:760-785`][wallet:wallet/chainntfns.go:760-785], checked). With the
+    default, each of its later votes' staker-fee transactions can respend the earlier output,
+    in the account the DEX funds orders from.
+  - **A VSP voting wallet** pays a ticket's staker fees to the ticket's commitment address, i.e.
+    the buyer's (WAL `v1.3.14`
+    [`wallet/chainntfns.go:731-768`][wallet-v1.3.14:wallet/chainntfns.go:731-768], checked; the
+    mainnet VSP runs `v1.3.14`). The wallet takes a fresh commitment address for each ticket it
+    buys (WAL [`wallet/createtx.go:1810-1828`][wallet:wallet/createtx.go:1810-1828],
+    [`:2224`][wallet:wallet/createtx.go:2224], checked), so its own VSP tickets never share one.
+    DCRDEX buys tickets with such addresses in its primary account (client
+    [`spv.go:1065-1084`][dex:client/asset/dcr/spv.go:1065-1084]). A ticket bought by anyone with
+    the wallet's address as its commitment pays its staker fee there too.
+
+  Within one block template a regular spend already placed wins; one still in the mempool
+  loses and becomes a double spend (NODE
   [`internal/mining/mining.go:880-906`][node:internal/mining/mining.go:880-906], [`:2603`][node:internal/mining/mining.go:2603]).
 - **Only miners, only inside a block.** The mempool runs script validation on a staker-fee
   respend and rejects an unsigned one (NODE [`internal/mempool/mempool.go:1907`][node:internal/mempool/mempool.go:1907]; the skip at
@@ -190,9 +204,8 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 - On mainnet the server already rejects stake outputs younger than 256 blocks (see "Not
   invariants"), so the live case is an aged staker-fee output respent while an order is booked
   or a swap is pending.
-- **Exposed by:** a DCRDEX wallet that buys VSP tickets, with a staker-fee output in its
-  funding account; another ticket of the same commitment address votes while an order is
-  booked, and again after a match.
+- **Exposed by:** a DCRDEX RPC wallet that votes its own tickets, with staker-fee outputs in its
+  funding account; its tickets vote while an order is booked.
 
 ### 9. `var` resolves to 9508 in every process
 
@@ -356,6 +369,9 @@ Differs on `v1.0.6`:
 [skarb:_vendored/monetarium-wallet/wallet/txrules/rules.go:52-64]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/_vendored/monetarium-wallet/wallet/txrules/rules.go#L52-L64
 [skarb:_vendored/monetarium-wallet/wallet/wallet.go:4619-4624]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/_vendored/monetarium-wallet/wallet/wallet.go#L4619-L4624
 [wallet-v1.3.14:wallet/chainntfns.go:731-768]: https://github.com/monetarium/monetarium-wallet/blob/8a5621869e7399572e19ed304f1c6bf50c6ed804/wallet/chainntfns.go#L731-L768
+[wallet:wallet/chainntfns.go:760-785]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/chainntfns.go#L760-L785
+[wallet:wallet/createtx.go:1810-1828]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/createtx.go#L1810-L1828
+[wallet:wallet/createtx.go:2224]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/createtx.go#L2224
 [wallet:spv/backend.go:482-500]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/spv/backend.go#L482-L500
 [wallet:wallet/wallet.go:4562-4568]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L4562-L4568
 [wallet:wallet/wallet.go:4599-4607]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L4599-L4607

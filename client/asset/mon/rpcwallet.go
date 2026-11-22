@@ -21,7 +21,6 @@ import (
 
 	"decred.org/dcrdex/client/asset"
 	"decred.org/dcrdex/dex"
-	"github.com/monetarium/monetarium-node/blockchain/stake"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/chaincfg/chainhash"
 	"github.com/monetarium/monetarium-node/cointype"
@@ -558,9 +557,23 @@ func (w *rpcWallet) AccountBalance(ctx context.Context, confirms int32, acctName
 
 	for i := range balances.Balances {
 		ab := &balances.Balances[i]
-		if ab.AccountName == acctName {
-			return ab, nil
+		if ab.AccountName != acctName {
+			continue
 		}
+		unspents, err := w.listUnspent(ctx, acctName)
+		if err != nil {
+			return nil, translateRPCCancelErr(err)
+		}
+		sf, err := stakerFeeAtoms(unspents)
+		if err != nil {
+			return nil, err
+		}
+		spendable, err := coinStrToAtoms(ab.Spendable)
+		if err != nil {
+			return nil, err
+		}
+		ab.Spendable = varAtomsToDecimalString(dcrutil.Amount(spendable - min(sf, spendable)))
+		return ab, nil
 	}
 
 	return nil, fmt.Errorf("account not found: %q", acctName)
@@ -599,16 +612,21 @@ func (w *rpcWallet) EstimateSmartFeeRate(ctx context.Context, confTarget int64, 
 // RawRequest.
 // Part of the Wallet interface.
 func (w *rpcWallet) Unspents(ctx context.Context, acctName string) ([]*walletjson.ListUnspentResult, error) {
-	var unspents []*walletjson.ListUnspentResult
-	// minconf, maxconf (rpcdefault=9999999), [address], account
-	params := anylist{0, 9999999, nil, acctName}
-	err := w.rpcClientRawRequest(ctx, methodListUnspent, params, &unspents)
-	// The wallet lists every coin type when given none, each amount in its
-	// output's own coin: only VAR funds VAR transactions. A staker-fee
-	// output can be respent by a miner without the owner's key.
+	unspents, err := w.listUnspent(ctx, acctName)
+	// Only VAR funds VAR transactions: the coin type is checked here too, as
+	// each amount is in its output's own coin.
 	return slices.DeleteFunc(unspents, func(u *walletjson.ListUnspentResult) bool {
-		return u.CoinType != uint8(cointype.CoinTypeVAR) || u.TxType == int(stake.TxTypeSSFee)
+		return u.CoinType != uint8(cointype.CoinTypeVAR) || isStakerFee(u)
 	}), err
+}
+
+// listUnspent lists the account's unspent VAR outputs, staker-fee ones included.
+func (w *rpcWallet) listUnspent(ctx context.Context, acctName string) ([]*walletjson.ListUnspentResult, error) {
+	var unspents []*walletjson.ListUnspentResult
+	// minconf, maxconf (rpcdefault=9999999), [address], account, coin type
+	params := anylist{0, 9999999, nil, acctName, uint8(cointype.CoinTypeVAR)}
+	err := w.rpcClientRawRequest(ctx, methodListUnspent, params, &unspents)
+	return unspents, err
 }
 
 // InternalAddress returns a change address from the specified account.
