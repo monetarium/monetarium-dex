@@ -328,6 +328,14 @@ create_wallet trading2 ${TRADING_WALLET2_SEED}
 create_wallet spvwallet ${SPV_WALLET_SEED}
 create_wallet staker ${STAKER_WALLET_SEED}
 
+# An RPC wallet fetches headers, discovers its addresses and only then asks the node for block
+# notifications: a block mined before that is not seen until the next one, and mine-alpha waits
+# for alpha on the tip, so the first block waits for every RPC wallet to be synced.
+# shortcut: synced is set one RPC call before the notification request, a block in that call is
+# still missed by the last wallet; wait on the wallet's own log line if a build ever stalls there.
+synced() { [ "$("${HCTL}/$1" syncstatus | jq -r .synced)" = true ]; }
+for w in alpha trading1 trading2 staker; do waitfor "$w wallet synced" synced "$w"; done
+
 # Fee account on alpha for the dcrdex server's regXPub.
 "${HCTL}/alpha" createnewaccount server_fees >/dev/null
 
