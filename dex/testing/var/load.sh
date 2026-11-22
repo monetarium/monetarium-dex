@@ -17,7 +17,12 @@
 #                             swap, redeem and refund mined in FROM..TO or still in
 #                             the mempool; fail if one took or will take more than 3
 #                             blocks, if there is none at all, or if a KIND given
-#                             (swap, redeem, refund) has none
+#                             (swap, redeem, refund) has none; each with the rate it
+#                             paid and the VAR load's rate at its broadcast
+#   load.sh sweep on|off      while on, every step also sends one VAR transaction at
+#                             each of SWEEP_PCTS percent of the VAR load's rate
+#   load.sh sweep report      blocks from broadcast to confirmation of every sweep
+#                             transaction, and a summary per percentage
 #
 # Outputs pay P2SH addresses from loadaddrs, whose scripts nobody holds. A P2SH
 # output counts no signature operation; a P2PKH one counts one, and the 5000 a
@@ -39,10 +44,23 @@ VAR_OUT_AMT=0.001
 TEMPLATE_WAIT=1    # seconds for the node to rebuild its block template after a step
 SKA1_COINS=50      # SKA1 coins alpha splits off for the load, 1e9 SKA1 each
 MAX_BLOCKS=3       # report: most blocks from broadcast to confirmation
+SWEEP_PCTS="50 75 90 95 100 105 110 125 150" # sweep: rates in percent of the load's
+SWEEP_AMT=0.01     # sweep: VAR per transaction, one output
+MIN_RATE=10000     # atoms/kB: the node's minimum relay fee; the sweep pays no less
 
 alpha() { "${HCTL}/alpha" "$@"; }
 node() { "${HCTL}/alpha_node" "$@"; }
 die() { echo "load.sh: $*" >&2; exit 1; }
+
+# kb <atoms/kB>: the rate as settxfee takes it, VAR/kB.
+kb() { printf '%d.%08d' $(($1 / 100000000)) $(($1 % 100000000)); }
+
+# paid: "atoms/B" a verbose VAR transaction on stdin paid, its fee over its size.
+paid() { jq -r '(([.vin[].amountin] | add) - ([.vout[].value] | add)) * 1e8 / (.hex | length / 2) | . * 10 | round / 10'; }
+
+# load_rate <height>: atoms/B the VAR load paid at the last step at that height, the
+# estimate as read then. The estimate moves within a block (20-40 atoms/B seen).
+load_rate() { awk -v h="$1" '$1 == h { e = $2 } END { if (e == "") print "?"; else printf "%.1f\n", e / 1000 }' "${DIR}/estimates"; }
 
 # amounts <n> <amount>: sendmany's amounts object, n outputs of amount.
 amounts() { head -n "$1" "${DIR}/addrs" | jq -R --arg a "$2" '{(.): $a}' | jq -s -c add; }
@@ -62,7 +80,7 @@ load_bytes() { awk -v c="$1" 'FILENAME == ARGV[1] { if ($2 == c) s[$1] = $3; nex
 
 step() {
   [ -e "${DIR}/on" ] || exit 0 # turned off while mine-alpha waited for the lock
-  local tip mempool block fee ska_left var_left
+  local tip mempool block fee ska_left var_left pct rate txid
   tip=$(node getblockcount)
   mempool=$(node getrawmempool true)
   # Entry heights of everything else in the mempool, for report.
@@ -77,11 +95,22 @@ step() {
   done
   # The VAR load at the estimate; settxfee 0 then hands alpha's fee back to the wallet.
   fee=$(node estimatesmartfee 2 | jq -r .feerate) # atoms/kB
-  alpha settxfee "$(printf '%d.%08d' $((fee / 100000000)) $((fee % 100000000)))" >/dev/null
+  echo "${tip} ${fee}" >>"${DIR}/estimates"
+  alpha settxfee "$(kb "${fee}")" >/dev/null
   while [ "${var_left}" -lt "${VAR_TARGET}" ]; do
     send 0 "${VAR_OUTS}" "${VAR_OUT_AMT}"
     var_left=$((var_left + $(tail -1 "${DIR}/txs" | cut -d' ' -f3)))
   done
+  # Under the load lock, as the sweep shares alpha's fee setting with the VAR load.
+  if [ -e "${DIR}/sweep-on" ]; then
+    for pct in ${SWEEP_PCTS}; do
+      rate=$((fee * pct / 100))
+      [ "${rate}" -ge "${MIN_RATE}" ] || rate=${MIN_RATE}
+      alpha settxfee "$(kb "${rate}")" >/dev/null
+      txid=$(amounts 1 "${SWEEP_AMT}" | alpha sendmany default - 1 "" 0)
+      echo "${txid} ${pct} ${tip}" >>"${DIR}/sweep"
+    done
+  fi
   alpha settxfee 0 >/dev/null
   # The node builds templates in the background: with the mempool this full,
   # mine-alpha's own regentemplate and 50 ms left 3 blocks in 11 without this step's sends.
@@ -123,17 +152,18 @@ kind() {
 }
 
 report() {
-  local from=$1 to=${2:-} tip h txid tx k entry
+  local from=$1 to=${2:-} tip h txid tx k entry at
   for k in "${@:3}"; do case $k in swap | redeem | refund) ;; *) die "unknown kind: $k" ;; esac; done
   tip=$(node getblockcount)
   [ -n "${to}" ] || to=${tip}
   # "txid height" of every regular transaction mined in FROM..TO, then "txid 0"
-  # for the mempool; load transactions left out.
+  # for the mempool; load and sweep transactions left out.
   for ((h = from; h <= to; h++)); do
     node getblock "$(node getblockhash "$h")" | jq -r --arg h "$h" '.tx[] | "\(.) \($h)"'
   done >"${DIR}/report-txs"
   node getrawmempool | jq -r '.[] | "\(.) 0"' >>"${DIR}/report-txs"
-  awk 'FILENAME == ARGV[1] { load[$1]; next } !($1 in load)' "${DIR}/txs" "${DIR}/report-txs" | while read -r txid h; do
+  cat "${DIR}/txs" "${DIR}/sweep" >"${DIR}/report-skip"
+  awk 'FILENAME == ARGV[1] { skip[$1]; next } !($1 in skip)' "${DIR}/report-skip" "${DIR}/report-txs" | while read -r txid h; do
     tx=$(node getrawtransaction "${txid}" 1)
     [ "$(jq '.vout[0].cointype' <<<"${tx}")" = 0 ] || continue
     k=$(kind <<<"${tx}")
@@ -142,12 +172,14 @@ report() {
     if [ "$h" = 0 ]; then
       # Judged whenever it entered: the next block, tip + 1, is its earliest.
       [ -n "${entry}" ] || entry=${tip} # entered after the last step
-      echo "${k} ${txid} broadcast at ${entry}, unconfirmed at ${tip}"
+      at="$(paid <<<"${tx}") atoms/B (load at $(load_rate "${entry}"))"
+      echo "${k} ${txid} at ${at} broadcast at ${entry}, unconfirmed at ${tip}"
       [ $((tip + 1 - entry)) -le "${MAX_BLOCKS}" ] || echo FAIL
     else
       # Not seen by a step: it entered after the last one, at the tip below its block.
       [ -n "${entry}" ] || entry="$((h - 1)) (not seen)"
-      echo "${k} ${txid} broadcast at ${entry}, mined at ${h}: $((h - ${entry%% *})) blocks"
+      at="$(paid <<<"${tx}") atoms/B (load at $(load_rate "${entry%% *}"))"
+      echo "${k} ${txid} at ${at} broadcast at ${entry}, mined at ${h}: $((h - ${entry%% *})) blocks"
       [ $((h - ${entry%% *})) -le "${MAX_BLOCKS}" ] || echo FAIL
     fi
     echo "count ${k}"
@@ -157,6 +189,26 @@ report() {
   ! grep -q '^FAIL' "${DIR}/report" || die "a swap, redeem or refund took or will take more than ${MAX_BLOCKS} blocks"
   grep -q '^count ' "${DIR}/report" || die "no swap, redeem or refund in blocks ${from}..${to}"
   for k in "${@:3}"; do grep -q "^count ${k}$" "${DIR}/report" || die "no ${k} in blocks ${from}..${to}"; done
+}
+
+# sweep_report: one line per sweep transaction, "pct txid rate load_rate entry mined
+# blocks" (mined - for one still unconfirmed, blocks then counted to the tip), then per
+# percentage the count, the mined ones' mean and most blocks, and the unconfirmed.
+sweep_report() {
+  local tip txid pct entry tx mined
+  tip=$(node getblockcount)
+  while read -r txid pct entry; do
+    tx=$(node getrawtransaction "${txid}" 1)
+    mined=$(jq -r '.blockheight // 0' <<<"${tx}")
+    if [ "${mined}" -gt 0 ]; then
+      echo "${pct} ${txid} $(paid <<<"${tx}") $(load_rate "${entry}") ${entry} ${mined} $((mined - entry))"
+    else
+      echo "${pct} ${txid} $(paid <<<"${tx}") $(load_rate "${entry}") ${entry} - $((tip - entry))"
+    fi
+  done <"${DIR}/sweep" | tee "${DIR}/sweep-report"
+  echo "pct n mean max unconfirmed (blocks; unconfirmed counted to tip ${tip})"
+  awk '{ n[$1]++; if ($6 == "-") { u[$1]++; next } m[$1]++; s[$1] += $7; if ($7 > x[$1]) x[$1] = $7 }
+    END { for (p in n) printf "%s %d %.1f %d %d\n", p, n[p], m[p] ? s[p] / m[p] : 0, x[p], u[p] }' "${DIR}/sweep-report" | sort -n
 }
 
 case ${1:-} in
@@ -171,7 +223,7 @@ case ${1:-} in
       "${HCTL}/mine-alpha" 1
       touch "${DIR}/split"
     fi
-    touch "${DIR}/txs" "${DIR}/seen" "${DIR}/blocks" "${DIR}/on"
+    touch "${DIR}/txs" "${DIR}/seen" "${DIR}/blocks" "${DIR}/estimates" "${DIR}/sweep" "${DIR}/on"
     ;;
   off)
     rm -f "${DIR}/on"
@@ -179,5 +231,13 @@ case ${1:-} in
   step) step ;;
   check) [ $# -ge 2 ] || die "usage: load.sh check FROM [TO]"; check "${@:2}" ;;
   report) [ $# -ge 2 ] || die "usage: load.sh report FROM [TO [KIND...]]"; report "${@:2}" ;;
+  sweep)
+    case ${2:-} in
+      on) touch "${DIR}/sweep-on" ;;
+      off) rm -f "${DIR}/sweep-on" ;;
+      report) sweep_report ;;
+      *) die "usage: load.sh sweep on|off|report" ;;
+    esac
+    ;;
   *) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 2 ;;
 esac

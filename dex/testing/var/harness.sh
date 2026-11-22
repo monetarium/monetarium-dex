@@ -168,7 +168,7 @@ while HEIGHT=$(./alpha_node getblockcount) && [ "$HEIGHT" -lt "$TARGET" ]; do
 done
 EOF
 
-# ./load on|off|check|report: dex/testing/var/load.sh, which mine-alpha runs while it is on.
+# ./load on|off|step|check|report|sweep: dex/testing/var/load.sh, which mine-alpha runs while it is on.
 cat > "${HCTL}/load" <<EOF
 #!/usr/bin/env bash
 "$(cd "$(dirname "$0")" && pwd)/load.sh" "\$@"

@@ -532,7 +532,7 @@ tests.
   fills its share of the default 375 000-byte block. These are `sendmany` transactions with
   many outputs, each under 100 000 bytes.
 - **VAR:** transactions filling VAR's 37 500-byte share at the fee rate alpha's
-  `estimatesmartfee` reports, the rate the DEX itself uses.
+  `estimatesmartfee` reports, the estimate the DEX's rate is taken from.
 
 Both go through wallet RPC to alpha.
 
@@ -550,13 +550,15 @@ At 10, swaps would pay less than the VAR traffic they compete with.
     trade tests alone do not check this: they count unconfirmed coins in balances and do not
     wait for a redeem to confirm.
   - **Measured:** blocks from broadcast to confirmation for each of them.
-- **`TestLargeSwapUnderLoad`:** orders in step 5's 0.1 VAR lots, funded without a split
-  through the driver's `FundOrder` at `MaxFeeRate` 100 (the market's under load) from 240
-  outputs of 0.01 VAR, and swapped at the DEX's rate, the estimate capped at 100, from a wallet
-  whose other VAR outputs are locked. Coin selection takes the largest coins first, so
-  otherwise it would fund from a few big ones.
-  - **Pass:** a 2.1 VAR order, 215 inputs at this rate, which the outputs cover, is refused at
-    funding: its swap, about 35 700 bytes, would never confirm (step 5, item 5).
+- **`TestLargeSwapUnderLoad`:** orders in step 5's 0.1 VAR lots, funded without a split through
+  the driver's `FundOrder` at `MaxFeeRate` 100 (the market's under load) from 240 outputs of
+  0.01 VAR, and swapped at the DEX's rate, from a wallet whose other VAR outputs are locked. The
+  test takes that rate as the estimate the load last read before a block, rounded up as the
+  server rounds it and capped at 100. Read right after a block, the estimate is briefly higher
+  (see the measurements below). Coin selection takes the largest coins first, so otherwise it
+  would fund from a few big ones.
+  - **Pass:** a 2.1 VAR order, 215 inputs at `MaxFeeRate` 100, which the outputs cover, is
+    refused at funding: its swap, about 35 700 bytes, would never confirm (step 5, item 5).
   - **Pass:** the largest order that funds, stepping down 0.01 VAR from 2.1, is within two
     inputs of the 29 500-byte cap by the driver's size estimate, and its swap confirms within
     3 blocks of its broadcast.
@@ -568,6 +570,47 @@ spend of the contract as a double spend. So no pass branch relies on a fee bump.
 
 **Done when** the trade tests and `TestLargeSwapUnderLoad` pass under load, and the
 measurements are written into this file.
+
+**Measured** on 2026-11-21: node `v1.3.14`, wallet `42aa5102`, one harness, under the load from
+height 178. `load.sh check` passed for every block from 178 to 368. The load's rate below is
+alpha's `estimatesmartfee 2` as read before each block, the rate its VAR transactions are sent
+at.
+
+- **Trade tests:** `success`, `nomakerredeem` and `notakerswap` on `varbtc` pass, each with
+  client 1 as maker and then as taker, within their own timeouts. Their VAR transactions were 5
+  swaps, 2 redeems and 3 refunds, and every one was mined 1 block after its broadcast. The
+  load's rate was 23.1 atoms/B. The swaps paid 24 to 24.1 and the redeems 24.1: the server and
+  the driver round the estimate up. The refunds paid 40.3. Sampled every 0.25 s, the estimate
+  reads 36 to 40 atoms/B for a few seconds around each block and about 20 to 23 between them,
+  and core picks a refund's rate when a new block makes the contract refundable.
+- **`TestLargeSwapUnderLoad`:** 6 runs. Each one refused the 2.1 VAR order at funding and funded
+  175 inputs, a swap of 29 040 to 29 053 serialized bytes, which was mined 1 block after its
+  broadcast. In the last 3, the swaps paid 24 atoms/B against the load's 23.1. In the first 3,
+  an earlier version of the test took the estimate it read right after mining a block, and paid
+  38 to 39 against the load's 22.1 to 22.3.
+- **Fee-rate sweep:** for 30 blocks, one small VAR transaction (mostly 252-253 bytes) at each
+  percentage of the load's rate, which ran from 23.1 to 25.5 atoms/B over these blocks. All 270
+  were mined, the last 3 blocks after the last send.
+
+  | Percent of the load's rate | Paid, atoms/B | Mean blocks to confirm | Most |
+  | --- | --- | --- | --- |
+  | 50 | 11.6-12.9 | 4.6 | 12 |
+  | 75 | 17.4-19.3 | 2.4 | 7 |
+  | 90 | 20.9-23.1 | 1.2 | 3 |
+  | 95 | 22.1-24.3 | 1.0 | 1 |
+  | 100 | 23.2-25.7 | 1.0 | 1 |
+  | 105 | 24.4-27.0 | 1.0 | 1 |
+  | 110 | 25.6-28.2 | 1.0 | 1 |
+  | 125 | 29.0-32.2 | 1.0 | 1 |
+  | 150 | 34.9-38.6 | 1.0 | 1 |
+
+- **What these runs do not show:** the load's VAR transactions are about 3 700 bytes each and
+  pay the load's rate; the trade tests' are 252 to 350 bytes and paid more. A VAR transaction
+  paying more than the load was mined ahead of it, and a small one paying less fit into the room
+  the load transactions left: in block 290, the sweep's transactions at 23.6 atoms/B and up came
+  before 9 load transactions at 23.4, and those at 21.2 and 22.4 after them. A near-cap swap has
+  no such room to fit into: at 24 atoms/B it went ahead of the load at 23.1. So no run had the
+  DEX compete with VAR traffic paying its rate or more.
 
 ## Step 10. Item 8: staker-fee outputs
 

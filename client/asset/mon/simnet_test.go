@@ -958,14 +958,24 @@ func TestLargeSwapUnderLoad(t *testing.T) {
 		t.Cleanup(func() { w.wallet.LockUnspent(tCtx, true, others) })
 	}
 
-	// The DEX's swap rate: the estimate, capped at the market's maxFeeRate.
+	// The DEX's swap rate: the load's rate as the last step read it, rounded up as the
+	// server rounds the estimate, capped at the market's maxFeeRate. Not w.FeeRate():
+	// read right after a block, the estimate jumps to about 40 atoms/B for a few seconds.
 	est := w.FeeRate()
-	if est == 0 {
-		t.Fatal("no fee rate estimate")
+	b, err := os.ReadFile(filepath.Join(harnessDir(), "load", "estimates"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	rate := min(est, maxFeeRate)
+	f := strings.Fields(string(b)) // rows of "height atoms/kB": the last field is the last step's
+	if len(f) == 0 {
+		t.Fatal("no load rate logged yet")
+	}
+	loadRate, err := strconv.ParseUint(f[len(f)-1], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rate := min((loadRate+999)/1000, maxFeeRate)
 	var coins asset.Coins
-	var err error
 	val := uint64(bigVal)
 	for ; val > 0; val -= 1e6 {
 		coins, _, _, err = w.FundOrder(&asset.Order{Version: version, Value: val, MaxSwapCount: val / lotSize,
