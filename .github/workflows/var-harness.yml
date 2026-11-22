@@ -18,6 +18,23 @@ jobs:
           for f in dex/testing/var/*.sh; do bash -n "$f"; done
           shellcheck -S warning dex/testing/var/*.sh
 
+  # The VAR workflows' syntax, expressions and run blocks (shellcheck through actionlint).
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      # From the release's checksums file, which matches GitHub's digest of the asset.
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 #v6.0.0
+      - run: |
+          d=$(mktemp -d)
+          curl -fsSL -o "$d/actionlint.tgz" "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $d/actionlint.tgz" | sha256sum -c
+          tar -xzf "$d/actionlint.tgz" -C "$d" actionlint
+          "$d/actionlint" .github/workflows/var-*.yml
+
   harness:
     name: VAR harness
     runs-on: ubuntu-latest
