@@ -103,14 +103,14 @@ jobs:
           key: ${{ steps.chains.outputs.cache-primary-key }}
 
       # The BTC and LTC harness-ctl scripts and the trade tests call the CLIs from PATH.
-      # bitcoind binds a Tor target on its P2P port + 1 by default: the BTC alpha
-      # node's lands on beta's P2P port, which Linux then refuses beta (macOS allows
-      # it). A wrapper ahead on PATH turns the Tor listener off.
+      # With no -bind, bitcoind also binds a Tor target on its P2P port + 1: the BTC
+      # alpha node's lands on beta's P2P port, which Linux then refuses beta (macOS
+      # allows it). A wrapper ahead on PATH binds the P2P port alone.
       - name: Set up the runner
         run: |
           echo "$CHAIN_BIN" >> "$GITHUB_PATH"
           mkdir -p "$RUNNER_TEMP/wrap"
-          printf '#!/bin/sh\nexec "%s/bitcoind" -listenonion=0 "$@"\n' "$CHAIN_BIN" > "$RUNNER_TEMP/wrap/bitcoind"
+          printf '#!/bin/sh\nexec "%s/bitcoind" -listenonion=0 -bind=0.0.0.0 "$@"\n' "$CHAIN_BIN" > "$RUNNER_TEMP/wrap/bitcoind"
           chmod +x "$RUNNER_TEMP/wrap/bitcoind"
           echo "$RUNNER_TEMP/wrap" >> "$GITHUB_PATH"
           "$CHAIN_BIN/bitcoind" -version | head -1
