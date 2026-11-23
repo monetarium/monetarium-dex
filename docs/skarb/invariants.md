@@ -172,7 +172,9 @@ Moved here from the PoC file; the number is kept.
   directory) while a swap is in flight or after a bond has expired. There is no database
   export. Skarb states this limit in its user-facing text, and a reset with no open match, no
   unrefunded bond and no BTC or LTC balance at or above that chain's dust limit goes ahead only
-  after a warning.
+  after a warning. Also accepted: if the server goes away while an order is booked, the account
+  cannot be disabled and the order cannot be canceled, so the bond stays locked until the server
+  returns.
 - **Exposed by:**
   - a fixed test vector: a given trading-wallet seed gives a given DEX app seed in every
     version;
