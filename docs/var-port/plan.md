@@ -56,8 +56,8 @@ Harness tests run on simnet.
 - **`monetarium-ctl`:** `v1.3.14`.
 - **Wallet:** `monetarium-wallet` main at a pinned commit, `42aa5102` or later, for both the
   harness wallet binary and the library the native SPV wallet embeds. `v1.3.14` has neither the
-  maturity fix nor the dust fix that `invariants.md` item 11 describes, so the PoC must not
-  embed it. When a wallet release contains both, the pin moves to that release.
+  maturity fix nor the dust fix that `../skarb/invariants.md` item 11 describes, so the PoC must
+  not embed it. When a wallet release contains both, the pin moves to that release.
 
 ## Step 1. Simnet harness, `dex/testing/var/`
 
