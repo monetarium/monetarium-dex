@@ -2,9 +2,13 @@
 
 VAR/BTC and VAR/LTC trading inside the Skarb wallet, after the proof of concept (PoC). The PoC's
 invariants, [`../var-port/invariants.md`](../var-port/invariants.md) items 1-10, still hold.
-They were tested on the DEX driver's own RPC and SPV wallets. This file adds what Skarb
-changes: the VAR wallet is Skarb's own, joined to the DEX through a seam; the users are real
-users on mainnet; and the app runs only while the user keeps it open.
+They were tested on the DEX driver's own RPC and SPV wallets, on the `monetarium-wallet`
+library this repository pins. Skarb builds against its own vendored copy of that library (SKARB
+[`go.mod:132`][skarb:go.mod:132]), which also signs the DEX's VAR transactions (DEX
+[`client/asset/mon/spv.go:753`][dex:client/asset/mon/spv.go:753]), so items 1 and 2 carry over to
+Skarb once the plan's first stage replaces that copy with a wallet release (item 11). This file
+adds what Skarb changes: the VAR wallet is Skarb's own, joined to the DEX through a seam; the
+users are real users on mainnet; and the app runs only while the user keeps it open.
 
 As in the PoC file, an invariant here is a failure that is silent or shows up late. How each
 test runs is the job of the Skarb-stage plan, which comes after this file; until then item 11's
@@ -26,15 +30,22 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
   dedicated account that Skarb creates. Changing the trading wallet is a reset of the DEX data.
 - **VAR seam:** `client/asset/mon` wraps Skarb's in-process `monetarium-wallet` wallet, so the
   Monetarium rules of the driver's SPV wallet apply unchanged. Skarb does not re-implement them.
-- **DEX login:** Skarb logs in to the DEX when it starts, so trades resume with the app; a
-  restart without login is therefore not listed among the accepted risks.
+- **DEX login:** Skarb logs in to the DEX when it starts, with its startup passphrase as the
+  DEX app password. Trading requires a startup passphrase, which Skarb otherwise leaves optional
+  and core requires (DEX [`client/core/core.go:4525-4526`][dex:client/core/core.go:4525-4526]),
+  and a change to it changes the DEX password
+  ([`:3493`][dex:client/core/core.go:3493]). So trades resume with the app, and a restart without
+  login is not listed among the accepted risks.
 - **Lock times:** DCRDEX's defaults, 8 hours for the taker and 20 hours for the maker (DEX
   [`dex/asset.go:17-18`][dex:dex/asset.go:17-18]). They are global and fixed on mainnet, so VAR
   cannot have its own.
 - **Accepted risks:** a lost DEX database is not recoverable from the seed for swaps in flight
-  and bonds already expired (item 14); a swap fails, and a taker's coins can be lost, when
-  Skarb cannot run a redeem before its deadline because the lid is closed, the computer is shut
-  down or loses power, Skarb is forced to quit or crashes, or the network is lost (item 15).
+  and bonds already expired, and there is no database export (item 14); a swap fails, and a
+  taker's coins can be lost, when Skarb cannot run a redeem before its deadline because the lid
+  is closed, the computer is shut down, restarted (an operating-system update included) or
+  loses power, Skarb is forced to quit or crashes, or the network is lost (item 15). A maker
+  redeeming a BTC or LTC contract just before the taker's lock time can lose its coins by the
+  same causes; the plan guards that case with a margin instead of accepting it.
 
 Versions read, each citation linking to the file at that commit:
 
@@ -188,11 +199,15 @@ Moved here from the PoC file; the number is kept.
   holds an idle-sleep inhibitor on macOS, Windows and Linux. Its user-facing text says to keep
   the computer on with Skarb running until swaps complete. No build without the quit warning and
   the idle-sleep inhibitor offers trading, which leaves mobile out.
-- **Accepted risk:** a closed lid, a shutdown, a power loss, a forced quit, a crash or a network
-  loss that keeps Skarb from running a redeem before its deadline.
+- **Accepted risk:** a closed lid, a shutdown or restart (an operating-system update included),
+  a power loss, a forced quit, a crash or a network loss that keeps Skarb from running a redeem
+  before its deadline. Not accepted: the maker's late BTC or LTC redeem above, which the plan
+  guards with a margin.
 - **Exposed by:** quitting Skarb with an active match: the user is told which swap and until
   when, and the quit waits for confirmation; the computer's idle sleep held off while any match
-  is active and released after the last one ends; a mobile build of Skarb offers no trading.
+  is active and released after the last one ends; removing the startup passphrase while trading
+  is on is refused, and changing it keeps the DEX login at start working; a mobile build of
+  Skarb offers no trading.
 
 ## Not invariants
 
@@ -214,11 +229,14 @@ Moved here from the PoC file; the number is kept.
 [dex:client/asset/mon/spv.go:630-633]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/asset/mon/spv.go#L630-L633
 [dex:client/asset/mon/spv.go:637-640]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/asset/mon/spv.go#L637-L640
 [dex:client/asset/mon/spv.go:710-717]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/asset/mon/spv.go#L710-L717
+[dex:client/asset/mon/spv.go:753]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/asset/mon/spv.go#L753
 [dex:client/asset/mon/wallet.go:38]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/asset/mon/wallet.go#L38
 [dex:client/core/bond.go:1102-1104]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/bond.go#L1102-L1104
 [dex:client/core/core.go:2904-2925]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L2904-L2925
 [dex:client/core/core.go:4253-4255]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4253-L4255
+[dex:client/core/core.go:3493]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L3493
 [dex:client/core/core.go:4442]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4442
+[dex:client/core/core.go:4525-4526]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4525-L4526
 [dex:client/core/core.go:4918-4921]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4918-L4921
 [dex:client/core/core.go:6705-6733]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L6705-L6733
 [dex:client/core/core.go:7115-7136]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L7115-L7136
@@ -234,6 +252,7 @@ Moved here from the PoC file; the number is kept.
 [dex:dex/asset.go:17-18]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/dex/asset.go#L17-L18
 [node:internal/mempool/mempool.go:1055-1058]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/mempool/mempool.go#L1055-L1058
 [node:internal/blockchain/validate.go:4247-4258]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/blockchain/validate.go#L4247-L4258
+[skarb:go.mod:132]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/go.mod#L132
 [skarb:README.md:7-12]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/README.md#L7-L12
 [skarb:_vendored/monetarium-wallet/wallet/txrules/rules.go:52-64]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/_vendored/monetarium-wallet/wallet/txrules/rules.go#L52-L64
 [skarb:_vendored/monetarium-wallet/wallet/wallet.go:4619-4624]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/_vendored/monetarium-wallet/wallet/wallet.go#L4619-L4624
