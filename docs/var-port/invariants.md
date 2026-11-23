@@ -2,7 +2,8 @@
 
 Properties the VAR port of DCRDEX must hold where Monetarium differs from Decred, so DCRDEX's
 own DCR tests would not catch a violation. Each one gets its test written before the code it
-guards. Items 1-10 belong to the proof of concept (PoC); item 11 belongs to the Skarb stage.
+guards. Items 1-10 belong to the proof of concept (PoC); item 11 and later ones belong to the
+Skarb stage, in [`../skarb/invariants.md`](../skarb/invariants.md).
 
 This file states what must be true and, per item, the setup that exposes a violation. How each
 test runs (network or unit test, parameters, pass condition) is the PoC plan's job,
@@ -17,7 +18,6 @@ Versions read, each citation linking to the file at that commit:
 - DEX = this repository at `v1.0.6` (`9521e9af`), the DCRDEX version Skarb pins. The DEX side
   was first read on `decred/dcrdex` master `fc634606`; [DEX references against upstream
   master](#dex-references-against-upstream-master) lists what moved and what differs.
-- SKARB = `skarb-wallet` `3e8790cf` (main)
 
 Short names: client `dcr.go` = DEX `client/asset/dcr/dcr.go`; client `spv.go` = DEX
 `client/asset/dcr/spv.go`; server `dcr.go` = DEX `server/asset/dcr/dcr.go`; `script.go` = DEX
@@ -228,23 +228,8 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 
 ## Skarb stage, not the PoC
 
-### 11. Skarb's wallet follows node rules for maturity and dust
-
-- **Side:** client, Skarb's embedded wallet.
-- **Why it can break:** Skarb's vendored wallet is older than wallet main and differs from the
-  node in two places that wallet main has fixed:
-  - **Maturity:** it applies coinbase maturity only to coinbase outputs, not to outputs of
-    transactions with an expiry (SKARB
-    [`_vendored/monetarium-wallet/wallet/wallet.go:4619-4624`][skarb:_vendored/monetarium-wallet/wallet/wallet.go:4619-4624]); the node requires it for both
-    (NODE [`validate.go:4247-4258`][node:internal/blockchain/validate.go:4247-4258]; WAL
-    [`wallet/wallet.go:4599-4607`][wallet:wallet/wallet.go:4599-4607]). The server accepts such a coin; the swap is then rejected
-    (`ErrExpiryTxSpentEarly`).
-  - **Dust:** its dust rule leaves out the coin-type byte (SKARB
-    [`_vendored/monetarium-wallet/wallet/txrules/rules.go:52-64`][skarb:_vendored/monetarium-wallet/wallet/txrules/rules.go:52-64], checked), so transactions it
-    builds itself (tickets, VSP fees) can carry change the node calls dust.
-- **Exposed by:** a Skarb wallet that receives a transaction with an expiry and places and
-  fills an order within coinbase maturity; a Skarb-built transaction whose change sits just
-  above the vendored dust threshold.
+Item 11 and the Skarb stage's other invariants are in
+[`../skarb/invariants.md`](../skarb/invariants.md).
 
 ## Not invariants
 
@@ -344,7 +329,6 @@ Differs on `v1.0.6`:
 [node:internal/blockchain/scriptval.go:267]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/blockchain/scriptval.go#L267
 [node:internal/blockchain/ska_emission.go:42-45]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/blockchain/ska_emission.go#L42-L45
 [node:internal/blockchain/validate.go:3933-3975]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/blockchain/validate.go#L3933-L3975
-[node:internal/blockchain/validate.go:4247-4258]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/blockchain/validate.go#L4247-L4258
 [node:internal/fees/feecalc.go:134]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/fees/feecalc.go#L134
 [node:internal/fees/feecalc.go:313-317]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/fees/feecalc.go#L313-L317
 [node:internal/fees/feecalc.go:693-696]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/fees/feecalc.go#L693-L696
@@ -366,13 +350,10 @@ Differs on `v1.0.6`:
 [node:wire/msgtx.go:513-526]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/wire/msgtx.go#L513-L526
 [node:wire/msgtx.go:553-570]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/wire/msgtx.go#L553-L570
 [node:wire/msgtx.go:610-617]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/wire/msgtx.go#L610-L617
-[skarb:_vendored/monetarium-wallet/wallet/txrules/rules.go:52-64]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/_vendored/monetarium-wallet/wallet/txrules/rules.go#L52-L64
-[skarb:_vendored/monetarium-wallet/wallet/wallet.go:4619-4624]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/_vendored/monetarium-wallet/wallet/wallet.go#L4619-L4624
 [wallet-v1.3.14:wallet/chainntfns.go:731-768]: https://github.com/monetarium/monetarium-wallet/blob/8a5621869e7399572e19ed304f1c6bf50c6ed804/wallet/chainntfns.go#L731-L768
 [wallet:wallet/chainntfns.go:760-785]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/chainntfns.go#L760-L785
 [wallet:wallet/createtx.go:1810-1828]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/createtx.go#L1810-L1828
 [wallet:wallet/createtx.go:2224]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/createtx.go#L2224
 [wallet:spv/backend.go:482-500]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/spv/backend.go#L482-L500
 [wallet:wallet/wallet.go:4562-4568]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L4562-L4568
-[wallet:wallet/wallet.go:4599-4607]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L4599-L4607
 [wallet:wallet/wallet.go:4690-4697]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L4690-L4697
