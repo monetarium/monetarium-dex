@@ -6,14 +6,13 @@ They were tested on the DEX driver's own RPC and SPV wallets, on the `monetarium
 library this repository pins. Skarb builds against its own vendored copy of that library (SKARB
 [`go.mod:132`][skarb:go.mod:132]), which also signs the DEX's VAR transactions (DEX
 [`client/asset/mon/spv.go:753`][dex:client/asset/mon/spv.go:753]), so items 1 and 2 carry over to
-Skarb once the plan's first stage replaces that copy with a wallet release at or past the commit
-this repository pins. This file
-adds what Skarb changes: the VAR wallet is Skarb's own, joined to the DEX through a seam; the
-users are real users on mainnet; and the app runs only while the user keeps it open.
+Skarb once steps 1-2 of [`plan.md`](plan.md) replace that copy with a wallet release at or past
+the commit this repository pins. This file adds what Skarb changes: the VAR wallet is Skarb's
+own, joined to the DEX through a seam; the users are real users on mainnet; and the app runs only
+while the user keeps it open.
 
 As in the PoC file, an invariant here is a failure that is silent or shows up late. How each
-test runs is the job of the Skarb-stage plan, which comes after this file; until then item 11's
-tests stay in the PoC plan's "Item 11" section.
+test runs is the job of the Skarb-stage plan, [`plan.md`](plan.md).
 
 ## The shape these invariants assume
 
@@ -47,7 +46,9 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
   is closed, the computer is shut down, restarted (an operating-system update included) or
   loses power, Skarb is forced to quit or crashes, or the network is lost (item 15). A maker
   redeeming a BTC or LTC contract just before the taker's lock time can lose its coins by the
-  same causes; the plan guards that case with a margin instead of accepting it. Two installs
+  same causes; the plan narrows that case with a margin, and accepts what remains: a redeem
+  sent before the margin and still unconfirmed when the taker can refund. Idle sleep after the
+  computer refuses Skarb's sleep inhibitor is accepted too (item 15). Two installs
   restored from one seed and run at once share one DEX account and the same coins (item
   13); Skarb's user-facing text says to trade from one install at a time.
 
@@ -103,7 +104,7 @@ Moved here from the PoC file; the number is kept.
 - **Exposed by:** a trading account holding an SKA1 output, a staker-fee output and a VAR
   output, read through the seam Skarb uses: funding takes only the VAR output, and `Available`
   leaves out the staker-fee output; and the driver's SPV-wallet tests for these three rules run
-  against that seam over an in-process wallet.
+  against that seam, with its harness tests over an in-process wallet.
 
 ## Failed swap or rejected order
 
@@ -221,8 +222,9 @@ Moved here from the PoC file; the number is kept.
   [`client/core/core.go:3912`][dex:client/core/core.go:3912]).
 - **Accepted risk:** a closed lid, a shutdown or restart (an operating-system update included),
   a power loss, a forced quit, a crash or a network loss that keeps Skarb from running a redeem
-  before its deadline. Not accepted: the maker's late BTC or LTC redeem above, which the plan
-  guards with a margin.
+  before its deadline; idle sleep after the computer refuses Skarb's sleep inhibitor; and the
+  maker's late BTC or LTC redeem above only when it was sent before the margin the plan guards
+  it with and is still unconfirmed when the taker can refund.
 - **Exposed by:** quitting Skarb, or turning off the trading wallet's sync, with an active
   match: the user is told which swap and until when, and the action waits for confirmation;
   the computer's idle sleep held off while any match is active and released after the last one

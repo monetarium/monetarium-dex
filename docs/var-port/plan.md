@@ -662,18 +662,9 @@ be 15 VAR, and an SKA staker-fee output is not subtracted.
 
 ## Item 11: Skarb stage, not the PoC
 
-**Network:** simnet, coinbase maturity 16.
-
-**Tests:**
-
-- A Skarb wallet that receives a transaction with an expiry must not select its output before
-  maturity. The pass condition is "coin not selected": the order is then funded from other
-  coins or refused.
-- A Skarb-built transaction must carry no change the node calls dust: either no change output,
-  or change of at least the node's threshold.
-
-The DEX's own native SPV wallet avoids both problems by pinning a wallet commit past
-`v1.3.14` (see Versions).
+Item 11's tests run in the Skarb stage, step 2 of [`../skarb/plan.md`](../skarb/plan.md). The
+DEX's own native SPV wallet avoids both problems by pinning a wallet commit past `v1.3.14` (see
+Versions).
 
 ## Upstream merges
 
