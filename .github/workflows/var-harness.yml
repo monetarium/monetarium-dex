@@ -35,6 +35,18 @@ jobs:
           tar -xzf "$d/actionlint.tgz" -C "$d" actionlint
           "$d/actionlint" .github/workflows/var-*.yml
 
+  # The public VAR and Skarb docs; build.yml's Markdown lint does not fail a PR.
+  docs:
+    name: VAR docs lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 #v6.0.0
+      - uses: DavidAnson/markdownlint-cli2-action@30a0e04f1870d58f8d717450cc6134995f993c63 #v21.0.0
+        with:
+          globs: |
+            docs/var-port/*.md
+            docs/skarb/*.md
+
   harness:
     name: VAR harness
     runs-on: ubuntu-latest
