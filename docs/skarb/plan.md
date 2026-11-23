@@ -155,10 +155,16 @@ native SPV wallets.
 - **Turning trading on.** The user picks one Skarb wallet. Skarb creates a dedicated trading
   account in it, gives that account its own passphrase, equal to the wallet's spending
   passphrase (WAL [`wallet/wallet.go:2400`][wallet:wallet/wallet.go:2400]), and requires a
-  startup passphrase. Turning trading on is refused while core is
-  initialized; otherwise Skarb calls `InitializeClient` with the seed derived below (DEX
-  [`client/core/core.go:4442`][dex:client/core/core.go:4442]). The call is the same for a new
-  wallet and a restored one, so a restore into a fresh profile starts DEX init the same way.
+  startup passphrase. A whole-wallet unlock does not unlock an account with its own passphrase
+  ([`wallet/udb/addressmanager.go:1566-1574`][wallet:wallet/udb/addressmanager.go:1566-1574]),
+  so for its own sends from the trading account Skarb also unlocks that account. Skarb's lock
+  after a send locks every account, the trading account included, and core unlocks it again
+  before each swap, redeem and refund
+  ([`client/core/wallet.go:151`][dex:client/core/wallet.go:151]). Turning trading on is refused
+  while core is initialized; otherwise Skarb calls `InitializeClient` with the seed derived
+  below (DEX [`client/core/core.go:4442`][dex:client/core/core.go:4442]). The call is the same
+  for a new wallet and a restored one, so a restore into a fresh profile starts DEX init the
+  same way.
 - **The DEX app seed.** A 15-word DEX mnemonic (DEX
   [`client/mnemonic/seed.go:94`][dex:client/mnemonic/seed.go:94]):
   - its 18 bytes of entropy are the first 18 bytes of HMAC-SHA256, keyed with the ASCII string
@@ -186,12 +192,13 @@ native SPV wallets.
   changing it calls `ChangeAppPass`
   ([`client/core/core.go:3493`][dex:client/core/core.go:3493]).
 - **Spending passphrase.** A change of the trading wallet's spending passphrase also sets the
-  trading account's passphrase to the new one and calls `SetWalletPassword` for VAR ([`client/core/core.go:3912`][dex:client/core/core.go:3912]),
-  with the startup passphrase asked in the same dialog. If either fails, Skarb restores the
-  wallet as it was before the change: its spending passphrase, the trading account's
-  passphrase, its stored mnemonic encrypted under the old one, and its passphrase type, from
-  copies of both passphrases kept for the purpose. Its own rollback on a database error restores
-  nothing: it reuses passphrase bytes the first change has already zeroed (SKARB
+  trading account's passphrase to the new one and calls `SetWalletPassword` for VAR
+  ([`client/core/core.go:3912`][dex:client/core/core.go:3912]), with the startup passphrase
+  asked in the same dialog. If either fails, Skarb restores the wallet as it was before the
+  change: its spending passphrase, the trading account's passphrase, its stored mnemonic
+  encrypted under the old one, and its passphrase type, from copies of both passphrases kept for
+  the purpose. Its own rollback on a database error restores nothing: it reuses passphrase bytes
+  the first change has already zeroed (SKARB
   [`libwallet/assets/wallet/wallet_shared.go:712`][skarb:libwallet/assets/wallet/wallet_shared.go:712]).
 - **A send's coins.** From the build inside Skarb's `Broadcast` of a send from the trading
   account until it is published or fails, Skarb locks its inputs, so a DEX funding call in
@@ -210,7 +217,12 @@ native SPV wallets.
   days after the bond was posted: a new bond locks for twice the server's bond expiry (30 days,
   DEX [`dex/asset.go:22`][dex:dex/asset.go:22]) plus buffers
   ([`client/core/bond.go:159-160`][dex:client/core/bond.go:159-160]). Core refunds it at its
-  first check after that, while Skarb runs logged in to a reachable server. A BTC or LTC
+  first check after that, while Skarb runs logged in and has reached the server since it
+  started. If it has not, the refusal names a second way out: disable the account, which core
+  allows with unspent bonds when no order is active
+  ([`client/core/account.go:69-78`][dex:client/core/account.go:69-78]); core then refunds its
+  bonds after their lock times without the server
+  ([`client/core/bond.go:724-743`][dex:client/core/bond.go:724-743]). A BTC or LTC
   balance: send it out. Otherwise they go ahead after a warning that names what a seed restore
   does not bring back, including a BTC or LTC remainder below the dust limit, which only the old
   trading wallet's seed recovers.
@@ -237,10 +249,17 @@ native SPV wallets.
 - **Item 14.** Delete, reset and switch, each tried with an active match, with an unrefunded
   bond and with a BTC or LTC balance at the dust limit: each is refused, naming that blocker and
   its way out (for a bond, its refund date: its lock time). With bond renewal turned off, core
-  posts no new bond, and once the last one has refunded the refusal for it lifts. With a balance
+  posts no new bond, and once the last one has refunded the refusal for it lifts. With a bond
+  unrefunded and Skarb started while the server is stopped, the refusal names disabling the
+  account; once it is
+  disabled, the bond refunds after its lock time passes on chain, the server still stopped. If
+  it does not, the outcome goes to the client before this step changes. With a balance
   below the dust limit and nothing else: each warns, naming the remainder, then goes ahead. With
   none of them: each warns, then goes ahead, and turning trading on with another wallet then
   initializes core from that wallet's seed. Turning trading on while core is initialized is refused.
+- **Trading account sends.** A send from the trading account in Skarb succeeds with the account
+  locked. After Skarb's lock following that send has run, a swap, a redeem and a refund from the
+  account each succeed.
 - **Item 15, passphrases.** Removing the startup passphrase with trading on is refused. After
   changing it, Skarb's next start logs in to the DEX with the new one. After changing the
   trading wallet's spending passphrase and locking the wallet: an order, a login, and a swap,
@@ -361,3 +380,7 @@ closed and restored from the trading wallet's seed into a fresh profile.
 [dex:client/core/bond.go:159-160]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L159-L160
 [dex:client/core/bond.go:1137]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L1137
 [dex:dex/asset.go:22]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/dex/asset.go#L22
+[dex:client/core/account.go:69-78]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/account.go#L69-L78
+[dex:client/core/bond.go:724-743]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L724-L743
+[wallet:wallet/udb/addressmanager.go:1566-1574]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/udb/addressmanager.go#L1566-L1574
+[dex:client/core/wallet.go:151]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/wallet.go#L151
