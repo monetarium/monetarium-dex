@@ -6,7 +6,8 @@ They were tested on the DEX driver's own RPC and SPV wallets, on the `monetarium
 library this repository pins. Skarb builds against its own vendored copy of that library (SKARB
 [`go.mod:132`][skarb:go.mod:132]), which also signs the DEX's VAR transactions (DEX
 [`client/asset/mon/spv.go:753`][dex:client/asset/mon/spv.go:753]), so items 1 and 2 carry over to
-Skarb once the plan's first stage replaces that copy with a wallet release (item 11). This file
+Skarb once the plan's first stage replaces that copy with a wallet release at or past the commit
+this repository pins. This file
 adds what Skarb changes: the VAR wallet is Skarb's own, joined to the DEX through a seam; the
 users are real users on mainnet; and the app runs only while the user keeps it open.
 
@@ -27,7 +28,8 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
   domain-separated, and passes it to `InitializeClient` as the restoration seed (DEX
   [`client/core/core.go:4442`][dex:client/core/core.go:4442]).
 - **VAR trading wallet:** one Skarb wallet, fixed for the life of the DEX data, trading from a
-  dedicated account that Skarb creates. Changing the trading wallet is a reset of the DEX data.
+  dedicated account that Skarb creates. The trading account buys no tickets: Skarb's ticket
+  purchase excludes it. Changing the trading wallet is a reset of the DEX data.
 - **VAR seam:** `client/asset/mon` wraps Skarb's in-process `monetarium-wallet` wallet, so the
   Monetarium rules of the driver's SPV wallet apply unchanged. Skarb does not re-implement them.
 - **DEX login:** Skarb logs in to the DEX when it starts, with its startup passphrase as the
@@ -45,7 +47,9 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
   is closed, the computer is shut down, restarted (an operating-system update included) or
   loses power, Skarb is forced to quit or crashes, or the network is lost (item 15). A maker
   redeeming a BTC or LTC contract just before the taker's lock time can lose its coins by the
-  same causes; the plan guards that case with a margin instead of accepting it.
+  same causes; the plan guards that case with a margin instead of accepting it. Two installs
+  restored from one seed and run at once share one DEX account and the same coins (item
+  13); Skarb's user-facing text says to trade from one install at a time.
 
 Versions read, each citation linking to the file at that commit:
 
@@ -133,9 +137,16 @@ Moved here from the PoC file; the number is kept.
   drops. No coins are lost, but a counterparty that already swapped waits for its lock time to
   refund. A booked order whose coins are gone at login is canceled when core connects to the
   server (DEX [`client/core/core.go:7115-7136`][dex:client/core/core.go:7115-7136]).
+  Each wallet unlock also retries unpaid VSP fees in the background (SKARB
+  [`libwallet/assets/dcr/ticket.go:410-425`][skarb:libwallet/assets/dcr/ticket.go:410-425]),
+  which would spend from a ticket's account before DEX login; the trading account buys no
+  tickets, so it has none.
+- **Accepted risk:** two installs restored from one seed and run at once: the locks of one do
+  not exist in the other, so each can spend what the other locked. Skarb's user-facing text
+  says to trade from one install at a time.
 - **Exposed by:** an order booked, Skarb restarted, and a send from the trading account before
   DEX login; a DEX `FundOrder` between Skarb listing a send's coins and its publish, from the
-  same account.
+  same account; a ticket purchase from the trading account, which Skarb refuses.
 
 ### 14. Funds the DEX holds are recoverable from the trading wallet's seed, or Skarb keeps them
 
@@ -157,9 +168,9 @@ Moved here from the PoC file; the number is kept.
   So deleting the trading wallet, resetting the DEX data or switching the trading wallet in-app
   can strand funds that a seed restore does not bring back.
 - **Accepted risk:** losing the DEX database outside the app (a lost device, a wiped app
-  directory) while a swap is in flight or after a bond has expired. Skarb states this limit in
-  its user-facing text, and a reset with no open match, no unrefunded bond and no BTC or LTC
-  balance goes ahead only after a warning.
+  directory) while a swap is in flight or after a bond has expired. There is no database
+  export. Skarb states this limit in its user-facing text, and a reset with no open match, no
+  unrefunded bond and no BTC or LTC balance goes ahead only after a warning.
 - **Exposed by:**
   - a fixed test vector: a given trading-wallet seed gives a given DEX app seed in every
     version;
@@ -193,28 +204,38 @@ Moved here from the PoC file; the number is kept.
   to log out while an order is active (DEX
   [`client/core/core.go:4918-4921`][dex:client/core/core.go:4918-4921]), and a shutdown that
   stops core without that check bypasses the refusal. On mobile the operating system stops
-  background apps.
+  background apps. Core unlocks the trading wallet with the password the DEX stores for it,
+  and does not check it while the wallet is unlocked (DEX
+  [`client/core/wallet.go:167-169`][dex:client/core/wallet.go:167-169]): a spending passphrase
+  changed in Skarb shows only when core next unlocks the locked wallet, to place an order,
+  resume trades at login, or run a swap, redeem or refund.
 - **What Skarb does:** while any match of this account is active (neither complete nor
-  refunded), Skarb warns on quit, naming the swap and its deadline and asking to confirm, and
-  holds an idle-sleep inhibitor on macOS, Windows and Linux. Its user-facing text says to keep
+  refunded), Skarb warns on quit, naming the swap and its deadline and asking to confirm, gives
+  the same warning when the user turns off the trading wallet's sync, which stops its network
+  backend (SKARB [`ui/page/root/home_page.go:259-265`][skarb:ui/page/root/home_page.go:259-265],
+  [`libwallet/assets/dcr/sync.go:346`][skarb:libwallet/assets/dcr/sync.go:346]), and holds an
+  idle-sleep inhibitor on macOS, Windows and Linux. Its user-facing text says to keep
   the computer on with Skarb running until swaps complete. No build without the quit warning and
-  the idle-sleep inhibitor offers trading, which leaves mobile out.
+  the idle-sleep inhibitor offers trading, which leaves mobile out. When the user changes the
+  trading wallet's spending passphrase, Skarb updates the password the DEX stores for it (DEX
+  [`client/core/core.go:3912`][dex:client/core/core.go:3912]).
 - **Accepted risk:** a closed lid, a shutdown or restart (an operating-system update included),
   a power loss, a forced quit, a crash or a network loss that keeps Skarb from running a redeem
   before its deadline. Not accepted: the maker's late BTC or LTC redeem above, which the plan
   guards with a margin.
-- **Exposed by:** quitting Skarb with an active match: the user is told which swap and until
-  when, and the quit waits for confirmation; the computer's idle sleep held off while any match
-  is active and released after the last one ends; removing the startup passphrase while trading
-  is on is refused, and changing it keeps the DEX login at start working; a mobile build of
+- **Exposed by:** quitting Skarb, or turning off the trading wallet's sync, with an active
+  match: the user is told which swap and until when, and the action waits for confirmation;
+  the computer's idle sleep held off while any match is active and released after the last one
+  ends; removing the startup passphrase while trading is on is refused, and changing it keeps
+  the DEX login at start working; an order, a login and a swap, redeem and refund after the
+  trading wallet's spending passphrase changed and Skarb locked the wallet; a mobile build of
   Skarb offers no trading.
 
 ## Not invariants
 
 - **Skarb locks the wallet** on its own actions (signing a message, creating an account,
   restarting sync). Before each swap, redeem and refund, core unlocks it again with the password
-  the DEX stores for the wallet, so this holds only while Skarb's spending passphrase matches it
-  (DEX [`client/core/trade.go:2059`][dex:client/core/trade.go:2059],
+  the DEX stores for the wallet, which item 15 keeps current (DEX [`client/core/trade.go:2059`][dex:client/core/trade.go:2059],
   [`:2084`][dex:client/core/trade.go:2084], [`:2111`][dex:client/core/trade.go:2111],
   [`:3028`][dex:client/core/trade.go:3028]).
 - **VAR lock times under SKA load:** in the PoC's load runs, with SKA filling its share and VAR
@@ -235,6 +256,7 @@ Moved here from the PoC file; the number is kept.
 [dex:client/core/core.go:2904-2925]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L2904-L2925
 [dex:client/core/core.go:4253-4255]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4253-L4255
 [dex:client/core/core.go:3493]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L3493
+[dex:client/core/core.go:3912]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L3912
 [dex:client/core/core.go:4442]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4442
 [dex:client/core/core.go:4525-4526]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4525-L4526
 [dex:client/core/core.go:4918-4921]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4918-L4921
@@ -243,6 +265,7 @@ Moved here from the PoC file; the number is kept.
 [dex:client/core/core.go:4669]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4669
 [dex:client/core/core.go:7752]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L7752
 [dex:client/core/trade.go:2333-2339]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/trade.go#L2333-L2339
+[dex:client/core/wallet.go:167-169]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/wallet.go#L167-L169
 [dex:client/core/trade.go:1644-1650]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/trade.go#L1644-L1650
 [dex:client/core/trade.go:1702-1740]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/trade.go#L1702-L1740
 [dex:client/core/trade.go:2059]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/trade.go#L2059
@@ -261,6 +284,9 @@ Moved here from the PoC file; the number is kept.
 [skarb:_vendored/monetarium-wallet/wallet/createtx.go:206-211]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/_vendored/monetarium-wallet/wallet/createtx.go#L206-L211
 [skarb:libwallet/assets/dcr/txauthor.go:852-856]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/libwallet/assets/dcr/txauthor.go#L852-L856
 [skarb:libwallet/assets/dcr/txauthor.go:943]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/libwallet/assets/dcr/txauthor.go#L943
+[skarb:libwallet/assets/dcr/ticket.go:410-425]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/libwallet/assets/dcr/ticket.go#L410-L425
+[skarb:libwallet/assets/dcr/sync.go:346]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/libwallet/assets/dcr/sync.go#L346
+[skarb:ui/page/root/home_page.go:259-265]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/ui/page/root/home_page.go#L259-L265
 [skarb:libwallet/assets/dcr/accounts.go:218-221]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/libwallet/assets/dcr/accounts.go#L218-L221
 [wallet:wallet/wallet.go:183]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L183
 [wallet:wallet/wallet.go:4599-4607]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L4599-L4607
