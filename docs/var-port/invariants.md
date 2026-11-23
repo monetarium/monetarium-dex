@@ -33,13 +33,14 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 
 - **Side:** both. Applies to the client's audit of the counterparty's contract and the
   server's checks of contracts, funding coins and bonds.
-- **Why it can break:** it holds today only because the Monetarium wire decoder sets
-  `Value = 0` on SKA outputs (NODE [`wire/msgtx.go:1785`][node:wire/msgtx.go:1785]), and verbose RPC leaves `Value` out
-  for SKA. Fields a porter would reach for carry SKA value: `TxOut.GetValue()` returns SKA
-  atoms (NODE [`wire/msgtx.go:610-617`][node:wire/msgtx.go:610-617]), verbose `Vin.AmountIn` is a float in SKA coins
-  (NODE [`internal/rpcserver/rpcserver.go:1141-1150`][node:internal/rpcserver/rpcserver.go:1141-1150]), `listunspent` `amount` is in the
-  output's own coin. A contract paid to the right P2SH with SKA1, accepted by the auditor,
-  means the auditor funds its side and loses it.
+- **Why it can break:** it holds today only because the Monetarium wire decoder sets `Value = 0` on
+  SKA outputs (NODE [`wire/msgtx.go:1785`][node:wire/msgtx.go:1785]), and verbose RPC leaves `Value`
+  out for SKA. Fields a porter would reach for carry SKA value: `TxOut.GetValue()` returns SKA atoms
+  (NODE [`wire/msgtx.go:610-617`][node:wire/msgtx.go:610-617]), verbose `Vin.AmountIn` is a float in
+  SKA coins (NODE
+  [`internal/rpcserver/rpcserver.go:1141-1150`][node:internal/rpcserver/rpcserver.go:1141-1150]),
+  `listunspent` `amount` is in the output's own coin. A contract paid to the right P2SH with SKA1,
+  accepted by the auditor, means the auditor funds its side and loses it.
 - **Exposed by:** a counterparty contract that pays the exact P2SH with an SKA1 output whose
   `SKAValue` equals the expected VAR atoms, and a variant scaled ×1e10, fed to client
   `AuditContract` (RPC and SPV) and server `Contract`/`FundingCoin`/`ParseBondTx`.
@@ -49,12 +50,13 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 - **Side:** both. Swap, redeem, refund, bond, bond refund, send. Upstream master also has
   private redeem and refund; `v1.0.6` does not, and they fall under this item once an upstream
   merge brings them.
-- **Why it can break:** the Monetarium sighash commits to coin type and SKA value fields
-  (NODE [`txscript/sighash.go:393-399`][node:txscript/sighash.go:393-399], [`:425-432`][node:txscript/sighash.go:425-432]), and every
-  output in the serialized prefix starts with a coin-type byte (NODE [`wire/msgtx.go:1844-1850`][node:wire/msgtx.go:1844-1850]).
-  A path left on Decred's `wire` or `txscript` signs invalid signatures or computes another
-  txid. The default trade test covers only swap and redeem, so a refund path left on Decred
-  code fails only when a refund is due.
+- **Why it can break:** the Monetarium sighash commits to coin type and SKA value fields (NODE
+  [`txscript/sighash.go:393-399`][node:txscript/sighash.go:393-399],
+  [`:425-432`][node:txscript/sighash.go:425-432]), and every output in the serialized prefix starts
+  with a coin-type byte (NODE [`wire/msgtx.go:1844-1850`][node:wire/msgtx.go:1844-1850]). A path
+  left on Decred's `wire` or `txscript` signs invalid signatures or computes another txid. The
+  default trade test covers only swap and redeem, so a refund path left on Decred code fails only
+  when a refund is due.
 - **Exposed by:** each kind built, signed, run through Monetarium's script engine, its local
   txid compared with the one `sendrawtransaction` returns; and a dependency check that no VAR
   client or server package imports `github.com/decred/dcrd/wire`, `.../txscript` or
@@ -63,29 +65,31 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 ### 3. No DEX transaction pays above the node's fee ceiling
 
 - **Side:** client, and the server's VAR market config.
-- **Why it can break:** the node rejects a VAR transaction whose fee exceeds
-  max(size × 1000 atoms/B, 1 000 000 atoms) unless high fees are allowed (NODE
-  [`internal/fees/feecalc.go:134`][node:internal/fees/feecalc.go:134], [`:693-696`][node:internal/fees/feecalc.go:693-696], checked), so
-  the 1000 atoms/B cap applies only to transactions of 1000 bytes or more; dcrd allows
-  10 000 × min relay. In RPC mode DCRDEX broadcasts its swaps, redeems, refunds and sends (client
+- **Why it can break:** the node rejects a VAR transaction whose fee exceeds max(size × 1000
+  atoms/B, 1 000 000 atoms) unless high fees are allowed (NODE
+  [`internal/fees/feecalc.go:134`][node:internal/fees/feecalc.go:134],
+  [`:693-696`][node:internal/fees/feecalc.go:693-696], checked), so the 1000 atoms/B cap applies
+  only to transactions of 1000 bytes or more; dcrd allows 10 000 × min relay. In RPC mode DCRDEX
+  broadcasts its swaps, redeems, refunds and sends (client
   [`dcr.go:5842`][dex:client/asset/dcr/dcr.go:5842]) and its bonds and bond refunds
-  ([`:4459`][dex:client/asset/dcr/dcr.go:4459], [`:4637`][dex:client/asset/dcr/dcr.go:4637])
-  with high fees not allowed; in SPV mode the flag is ignored (client
+  ([`:4459`][dex:client/asset/dcr/dcr.go:4459], [`:4637`][dex:client/asset/dcr/dcr.go:4637]) with
+  high fees not allowed; in SPV mode the flag is ignored (client
   [`spv.go:740-744`][dex:client/asset/dcr/spv.go:740-744], checked). The market falls back to
-  `MaxFeeRate` (DEX [`server/market/market.go:2315-2316`][dex:server/market/market.go:2315-2316]). The node reports a too-high fee as
-  `ErrInsufficientFee` (NODE [`internal/mempool/mempool.go:1894-1897`][node:internal/mempool/mempool.go:1894-1897]).
+  `MaxFeeRate` (DEX [`server/market/market.go:2315-2316`][dex:server/market/market.go:2315-2316]).
+  The node reports a too-high fee as `ErrInsufficientFee` (NODE
+  [`internal/mempool/mempool.go:1894-1897`][node:internal/mempool/mempool.go:1894-1897]).
 - **Exposed by:** a DEX transaction whose fee exceeds max(size × 1000, 1 000 000) atoms,
   reached through the market's `MaxFeeRate` or the client's swap and redeem fee bumps.
 
 ### 4. Size, fee and dust arithmetic uses Monetarium's transaction sizes
 
 - **Side:** client, and the server's minimum lot and bond sizes.
-- **Why it can break:** a Monetarium output is 1 byte larger than Decred's (coin type) and
-  each input witness 1 byte larger (NODE [`wire/msgtx.go:513-526`][node:wire/msgtx.go:513-526],
+- **Why it can break:** a Monetarium output is 1 byte larger than Decred's (coin type) and each
+  input witness 1 byte larger (NODE [`wire/msgtx.go:513-526`][node:wire/msgtx.go:513-526],
   [`:553-570`][node:wire/msgtx.go:553-570]); DCRDEX's constants are Decred's
   ([`script.go:50-53`][dex:dex/networks/dcr/script.go:50-53],
-  [`:67`][dex:dex/networks/dcr/script.go:67], [`:84-87`][dex:dex/networks/dcr/script.go:84-87]). Four
-  effects:
+  [`:67`][dex:dex/networks/dcr/script.go:67], [`:84-87`][dex:dex/networks/dcr/script.go:84-87]).
+  Four effects:
   - **Redeem and refund fees** have 0 bytes of margin at min relay: the 36-byte output
     constant against 37 is offset only by 1 byte of slack in `DERSigLength`
     ([`script.go:90`][dex:dex/networks/dcr/script.go:90]). One more byte and the transaction is 10
@@ -94,16 +98,16 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
     one-lot swaps at `MaxFeeRate` when every signature has a 33-byte R (DEX
     [`dex/calc/fees.go:7-15`][dex:dex/calc/fees.go:7-15]); the last swap fails.
   - **Dust:** the node's threshold at 10 atoms/B is 6060 atoms (NODE
-    [`internal/mempool/policy.go:312-326`][node:internal/mempool/policy.go:312-326]; the comment there still says
-    Decred's 6030), DCRDEX's 6030, so change of 6030-6059 atoms is
-    added and then refused.
+    [`internal/mempool/policy.go:312-326`][node:internal/mempool/policy.go:312-326]; the comment
+    there still says Decred's 6030), DCRDEX's 6030, so change of 6030-6059 atoms is added and then
+    refused.
   - **The server's minimum lot and bond sizes** use the same 36-byte output
     ([`script.go:155-181`][dex:dex/networks/dcr/script.go:155-181], checked) and leave 6030 atoms
     against the node's 6060 when a lot or bond sits at the minimum.
 - The explorer's fee rate and the harness markets' `maxFeeRate` sit exactly at min relay (10
-  atoms/B); the node's `estimatesmartfee` returns at least 15 on simnet once it has built a block template (NODE
-  [`internal/fees/feecalc.go:313-317`][node:internal/fees/feecalc.go:313-317], checked), so RPC-mode redeems and refunds do not reach
-  these edges.
+  atoms/B); the node's `estimatesmartfee` returns at least 15 on simnet once it has built a block
+  template (NODE [`internal/fees/feecalc.go:313-317`][node:internal/fees/feecalc.go:313-317],
+  checked), so RPC-mode redeems and refunds do not reach these edges.
 - **Exposed by:** a redeem and a refund signed with a 33-byte R and a 32-byte S at 10 atoms/B,
   submitted to `mond`; a 20-lot split-funded order filled one lot per epoch at `MaxFeeRate`
   10; a swap leaving 6040 atoms of change at 10 atoms/B; a lot or bond at the server's minimum.
@@ -111,11 +115,12 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 ### 5. Every DEX transaction confirms in time under SKA load
 
 - **Side:** client; the lock-time choice is the server's.
-- **Why it can break:** VAR shares block space with SKA. Under SKA load VAR's share is 10% of
-  the block (NODE [`internal/blockalloc/allocator.go:118-120`][node:internal/blockalloc/allocator.go:118-120], checked),
-  plus a 10% share of any unused space
-  ([`:172-179`][node:internal/blockalloc/allocator.go:172-179]): about 37 500 of the default
-  375 000 bytes per block (NODE [`config.go:77`][node:config.go:77]). Two consequences:
+- **Why it can break:** VAR shares block space with SKA. Under SKA load VAR's share is 10% of the
+  block (NODE
+  [`internal/blockalloc/allocator.go:118-120`][node:internal/blockalloc/allocator.go:118-120],
+  checked), plus a 10% share of any unused space
+  ([`:172-179`][node:internal/blockalloc/allocator.go:172-179]): about 37 500 of the default 375 000
+  bytes per block (NODE [`config.go:77`][node:config.go:77]). Two consequences:
   - **Redeems and refunds** compete for that share with other VAR transactions, and the driver
     cannot raise the fee of a transaction it has broadcast: the node refuses any other spend of
     the contract as a double spend (NODE
@@ -145,13 +150,14 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 ### 6. Funding and change use VAR coins only
 
 - **Side:** client, RPC and SPV mode.
-- **Why it can break:** listing unspent outputs without a coin type returns VAR and every SKA
-  type together (WAL [`wallet/wallet.go:4562-4568`][wallet:wallet/wallet.go:4562-4568]), SKA outputs are marked spendable
-  ([`:4690-4697`][wallet:wallet/wallet.go:4690-4697]), and DCRDEX has no coin check. In RPC mode the
-  wallet signs an SKA input under VAR outputs and the node rejects the broadcast. In SPV mode
-  publishing reports success once a peer takes the bytes (WAL [`spv/backend.go:482-500`][wallet:spv/backend.go:482-500]),
-  peers drop the transaction, and the match is revoked against the user. The account balance
-  is VAR-only, so it looks right while selection is wrong.
+- **Why it can break:** listing unspent outputs without a coin type returns VAR and every SKA type
+  together (WAL [`wallet/wallet.go:4562-4568`][wallet:wallet/wallet.go:4562-4568]), SKA outputs are
+  marked spendable ([`:4690-4697`][wallet:wallet/wallet.go:4690-4697]), and DCRDEX has no coin
+  check. In RPC mode the wallet signs an SKA input under VAR outputs and the node rejects the
+  broadcast. In SPV mode publishing reports success once a peer takes the bytes (WAL
+  [`spv/backend.go:482-500`][wallet:spv/backend.go:482-500]), peers drop the transaction, and the
+  match is revoked against the user. The account balance is VAR-only, so it looks right while
+  selection is wrong.
 - **Exposed by:** a trading wallet holding SKA1 outputs larger than any VAR output, through
   order funding (standard and split), send, withdraw and account transfer in both modes; no
   SKA output may be selected or locked.
@@ -159,11 +165,12 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 ### 7. Fee rates come from Monetarium, in the right units
 
 - **Side:** both.
-- **Why it can break:** the node's `estimatesmartfee` returns atoms/kB as an integer string
-  (NODE [`internal/rpcserver/rpcserver.go:1569-1578`][node:internal/rpcserver/rpcserver.go:1569-1578]); DCRDEX decodes a coins/kB float and
-  multiplies by 1e8 (server [`dcr.go:412-425`][dex:server/asset/dcr/dcr.go:412-425]). A partial fix
-  is off by 10^8 or lands at 1 atom/B, below min relay. In SPV mode DCRDEX asks Decred's
-  dcrdata for a rate (client [`dcr.go:1363-1384`][dex:client/asset/dcr/dcr.go:1363-1384]).
+- **Why it can break:** the node's `estimatesmartfee` returns atoms/kB as an integer string (NODE
+  [`internal/rpcserver/rpcserver.go:1569-1578`][node:internal/rpcserver/rpcserver.go:1569-1578]);
+  DCRDEX decodes a coins/kB float and multiplies by 1e8 (server
+  [`dcr.go:412-425`][dex:server/asset/dcr/dcr.go:412-425]). A partial fix is off by 10^8 or lands at
+  1 atom/B, below min relay. In SPV mode DCRDEX asks Decred's dcrdata for a rate (client
+  [`dcr.go:1363-1384`][dex:client/asset/dcr/dcr.go:1363-1384]).
   `monetarium.online/insight/api/utils/estimatefee` serves the same route in the same format
   (`{"2":0.0001}`, checked 2026-11-17).
 - **Exposed by:** the server's and client's rates compared with `estimatesmartfee`; an SPV
@@ -172,11 +179,11 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 ### 8. Funding does not rely on staker-fee outputs
 
 - **Side:** client; the server for funding-coin checks.
-- **Why it can break:** VAR staker fees are paid by a separate staker-fee transaction, which
-  any miner can respend into a new output to the same script without the owner's key
-  ("augment") (NODE [`internal/blockchain/validate.go:3933-3975`][node:internal/blockchain/validate.go:3933-3975], checked). The owner keeps
-  the value, but the specific coin disappears. Only the staker-fee transaction of a later vote
-  that pays the same address can respend it.
+- **Why it can break:** VAR staker fees are paid by a separate staker-fee transaction, which any
+  miner can respend into a new output to the same script without the owner's key ("augment") (NODE
+  [`internal/blockchain/validate.go:3933-3975`][node:internal/blockchain/validate.go:3933-3975],
+  checked). The owner keeps the value, but the specific coin disappears. Only the staker-fee
+  transaction of a later vote that pays the same address can respend it.
   - **A wallet voting its own tickets** pays every vote's staker fee to one consolidation
     address of the ticket's account: by default the account's first external address, or
     whatever address `setvotefeeconsolidationaddress` set (WAL
@@ -193,14 +200,16 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
     [`spv.go:1065-1084`][dex:client/asset/dcr/spv.go:1065-1084]). A ticket bought by anyone with
     the wallet's address as its commitment pays its staker fee there too.
 
-  Within one block template a regular spend already placed wins; one still in the mempool
-  loses and becomes a double spend (NODE
-  [`internal/mining/mining.go:880-906`][node:internal/mining/mining.go:880-906], [`:2603`][node:internal/mining/mining.go:2603]).
-- **Only miners, only inside a block.** The mempool runs script validation on a staker-fee
-  respend and rejects an unsigned one (NODE [`internal/mempool/mempool.go:1907`][node:internal/mempool/mempool.go:1907]; the skip at
-  [`internal/blockchain/scriptval.go:267`][node:internal/blockchain/scriptval.go:267] applies to blocks only). Checked with the node's
-  mempool test harness on mainnet params: the unsigned respend was rejected and the owner's
-  signed spend of the same output accepted.
+  Within one block template a regular spend already placed wins; one still in the mempool loses and
+  becomes a double spend (NODE
+  [`internal/mining/mining.go:880-906`][node:internal/mining/mining.go:880-906],
+  [`:2603`][node:internal/mining/mining.go:2603]).
+- **Only miners, only inside a block.** The mempool runs script validation on a staker-fee respend
+  and rejects an unsigned one (NODE
+  [`internal/mempool/mempool.go:1907`][node:internal/mempool/mempool.go:1907]; the skip at
+  [`internal/blockchain/scriptval.go:267`][node:internal/blockchain/scriptval.go:267] applies to
+  blocks only). Checked with the node's mempool test harness on mainnet params: the unsigned respend
+  was rejected and the owner's signed spend of the same output accepted.
 - On mainnet the server already rejects stake outputs younger than 256 blocks (see "Not
   invariants"), so the live case is an aged staker-fee output respent while an order is booked
   or a swap is pending.
@@ -210,20 +219,21 @@ now sent as strings instead of floats, the extra `SpendLimit` argument of `purch
 ### 9. `var` resolves to 9508 in every process
 
 - **Side:** both.
-- **Why it can break:** the symbol `var` is already BIP id 233 (DEX [`dex/bip-id.go:278`][dex:dex/bip-id.go:278]),
-  and the symbol→id map is built by iterating another map
-  ([`:16-25`][dex:dex/bip-id.go:16-25], checked), so with 9508 also named `var` the winner changes
-  per process. The server resolves markets through it; when 233 wins it fails with "no asset
+- **Why it can break:** the symbol `var` is already BIP id 233 (DEX
+  [`dex/bip-id.go:278`][dex:dex/bip-id.go:278]), and the symbol→id map is built by iterating another
+  map ([`:16-25`][dex:dex/bip-id.go:16-25], checked), so with 9508 also named `var` the winner
+  changes per process. The server resolves markets through it; when 233 wins it fails with "no asset
   registered for var (233)".
 - **Exposed by:** rebuilding the map 1000 times; starting the server 20 times.
 
 ### 10. Monetarium network parameters everywhere
 
 - **Side:** both.
-- **Why it can break:** any Decred chain parameter left in the port (addresses, HD ids,
-  network checks) passes silently on simnet and testnet, where Monetarium's address prefixes
-  equal Decred's (NODE [`chaincfg/simnetparams.go:545-559`][node:chaincfg/simnetparams.go:545-559],
-  [`chaincfg/testnetparams.go:542-545`][node:chaincfg/testnetparams.go:542-545], checked). Mainnet prefixes differ.
+- **Why it can break:** any Decred chain parameter left in the port (addresses, HD ids, network
+  checks) passes silently on simnet and testnet, where Monetarium's address prefixes equal Decred's
+  (NODE [`chaincfg/simnetparams.go:545-559`][node:chaincfg/simnetparams.go:545-559],
+  [`chaincfg/testnetparams.go:542-545`][node:chaincfg/testnetparams.go:542-545], checked). Mainnet
+  prefixes differ.
 - **Exposed by:** client and server, with mainnet parameters, given a Decred mainnet address.
 
 ## Skarb stage, not the PoC
@@ -233,11 +243,12 @@ Item 11 and the Skarb stage's other invariants are in
 
 ## Not invariants
 
-- **Server stricter than the node on stake-output maturity.** The server requires 256 blocks
-  for any stake output (server [`dcr.go:1067-1073`][dex:server/asset/dcr/dcr.go:1067-1073]); the
-  mainnet node requires 1 for votes' outputs, because the treasury agenda can never activate
-  (its vote window ended 2021-08-01, NODE [`chaincfg/mainnetparams.go:318-319`][node:chaincfg/mainnetparams.go:318-319], checked;
-  Monetarium has no treasury). Costs only rejected orders; simnet does not show it.
+- **Server stricter than the node on stake-output maturity.** The server requires 256 blocks for any
+  stake output (server [`dcr.go:1067-1073`][dex:server/asset/dcr/dcr.go:1067-1073]); the mainnet
+  node requires 1 for votes' outputs, because the treasury agenda can never activate (its vote
+  window ended 2021-08-01, NODE
+  [`chaincfg/mainnetparams.go:318-319`][node:chaincfg/mainnetparams.go:318-319], checked; Monetarium
+  has no treasury). Costs only rejected orders; simnet does not show it.
 - **Input values on the server** feed only the fee rate (server
   [`dcr.go:822-856`][dex:server/asset/dcr/dcr.go:822-856]); no swap step reads a redemption's
   value. Not a risk.
@@ -248,10 +259,11 @@ Item 11 and the Skarb stage's other invariants are in
 - **SKA activity is invisible or shown as VAR** in the DEX wallet: an SKA receipt shows as a
   0-VAR receive, and an address that received only SKA is handed out again (it counts VAR
   only). Display only; for the Skarb screens.
-- **Harness facts** (for the plan): SKA1 on simnet is emitted only at heights 150-250 with a
-  fixed key (NODE [`chaincfg/simnetparams.go:653-668`][node:chaincfg/simnetparams.go:653-668],
-  [`internal/blockchain/ska_emission.go:42-45`][node:internal/blockchain/ska_emission.go:42-45], checked); the Decred chain archive cannot be
-  reused (no premine); stake validation starts at 144, so voting wallets must run; the server's node runs `--txindex`.
+- **Harness facts** (for the plan): SKA1 on simnet is emitted only at heights 150-250 with a fixed
+  key (NODE [`chaincfg/simnetparams.go:653-668`][node:chaincfg/simnetparams.go:653-668],
+  [`internal/blockchain/ska_emission.go:42-45`][node:internal/blockchain/ska_emission.go:42-45],
+  checked); the Decred chain archive cannot be reused (no premine); stake validation starts at 144,
+  so voting wallets must run; the server's node runs `--txindex`.
 
 ## Open
 
