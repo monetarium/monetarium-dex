@@ -171,14 +171,15 @@ Moved here from the PoC file; the number is kept.
 - **Accepted risk:** losing the DEX database outside the app (a lost device, a wiped app
   directory) while a swap is in flight or after a bond has expired. There is no database
   export. Skarb states this limit in its user-facing text, and a reset with no open match, no
-  unrefunded bond and no BTC or LTC balance goes ahead only after a warning.
+  unrefunded bond and no BTC or LTC balance at or above that chain's dust limit goes ahead only
+  after a warning.
 - **Exposed by:**
   - a fixed test vector: a given trading-wallet seed gives a given DEX app seed in every
     version;
   - a restore from the trading wallet's seed into a fresh profile, holding an active bond and
     BTC and LTC balances: the bond is found and later refunded, and the balances show;
   - deletion, reset and switch attempts while a match is open, while a bond is unrefunded, and
-    while a BTC or LTC balance is non-zero: each is refused.
+    while a BTC or LTC balance is at or above that chain's dust limit: each is refused.
 
 ### 15. Skarb stays up for each redeem before the counterparty's lock time
 

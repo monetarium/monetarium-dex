@@ -205,11 +205,18 @@ native SPV wallets.
   data, so core is next initialized from the new trading wallet's seed. Deleting, resetting and
   switching are refused while a match is active, a bond is unrefunded or a BTC or LTC balance is
   at or above that chain's dust limit. The refusal names each blocker and its way out: an active
-  match, wait for it to finish; bonds, stop renewing them, and the last one refunds after its
-  expiry, whose date it shows (30 days on mainnet); a BTC or LTC balance, send it out.
-  Otherwise they go ahead after a warning that names what a seed restore does not bring back,
-  including a BTC or LTC remainder below the dust limit, which only the old trading wallet's
-  seed recovers.
+  match, wait for it to finish; bonds, turn renewal off, and the last one can refund once its
+  lock time passes on its chain, the date the refusal shows. On mainnet that is up to about 60
+  days after the bond was posted: a new bond locks for twice the server's bond expiry (30 days,
+  DEX [`dex/asset.go:22`][dex:dex/asset.go:22]) plus buffers
+  ([`client/core/bond.go:159-160`][dex:client/core/bond.go:159-160]). Core refunds it at its
+  first check after that, while Skarb runs logged in to a reachable server. A BTC or LTC
+  balance: send it out. Otherwise they go ahead after a warning that names what a seed restore
+  does not bring back, including a BTC or LTC remainder below the dust limit, which only the old
+  trading wallet's seed recovers.
+- **Bond renewal.** Skarb has a control that turns bond renewal off, setting the target tier
+  to 0 ([`client/core/bond.go:1137`][dex:client/core/bond.go:1137]); core then posts no new
+  bond, and the ones posted refund after their lock times, on the same conditions.
 - **User-facing text:** trade from one install at a time; a lost DEX database loses swaps in
   flight and expired bonds; keep the computer on with Skarb running until swaps complete.
 
@@ -229,10 +236,11 @@ native SPV wallets.
   refused.
 - **Item 14.** Delete, reset and switch, each tried with an active match, with an unrefunded
   bond and with a BTC or LTC balance at the dust limit: each is refused, naming that blocker and
-  its way out (for a bond, its refund date). With a balance below the dust limit and nothing
-  else: each warns, naming the remainder, then goes ahead. With none of them: each warns, then
-  goes ahead, and turning trading on with another wallet then initializes core from that wallet's
-  seed. Turning trading on while core is initialized is refused.
+  its way out (for a bond, its refund date: its lock time). With bond renewal turned off, core
+  posts no new bond, and once the last one has refunded the refusal for it lifts. With a balance
+  below the dust limit and nothing else: each warns, naming the remainder, then goes ahead. With
+  none of them: each warns, then goes ahead, and turning trading on with another wallet then
+  initializes core from that wallet's seed. Turning trading on while core is initialized is refused.
 - **Item 15, passphrases.** Removing the startup passphrase with trading on is refused. After
   changing it, Skarb's next start logs in to the DEX with the new one. After changing the
   trading wallet's spending passphrase and locking the wallet: an order, a login, and a swap,
@@ -350,3 +358,6 @@ closed and restored from the trading wallet's seed into a fresh profile.
 [dex:client/asset/btc/btc.go:139-140]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/asset/btc/btc.go#L139-L140
 [wallet:wallet/wallet.go:2400]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L2400
 [wallet:wallet/wallet.go:2422-2431]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L2422-L2431
+[dex:client/core/bond.go:159-160]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L159-L160
+[dex:client/core/bond.go:1137]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L1137
+[dex:dex/asset.go:22]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/dex/asset.go#L22
