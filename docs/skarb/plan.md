@@ -225,10 +225,11 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   [`:638`][skarb:libwallet/assets/dcr/ticket.go:638]).
 - **Delete, reset and switch.** Deleting the trading wallet and switching it each reset the DEX
   data, so core is next initialized from the new trading wallet's seed. Deleting, resetting and
-  switching are refused while a match is active, a bond is unrefunded or a BTC or LTC balance is
-  at or above that chain's dust limit. The refusal names each blocker and its way out: an active
-  match, wait for it to finish; bonds, turn renewal off, and the last one can refund once its
-  lock time passes on its chain, the date the refusal shows. On mainnet that is up to about 60
+  switching are refused while a match is active, a bond is unrefunded (one broadcast and not yet
+  stored by the server included) or a BTC or LTC balance is at or above that chain's dust limit.
+  The refusal names each blocker and its way out: an active match, wait for it to finish; bonds,
+  turn renewal off, and the last one can refund once its lock time passes on its chain, the date
+  the refusal shows. On mainnet that is up to about 60
   days after the bond was posted: a new bond locks for twice the server's bond expiry (30 days,
   DEX [`dex/asset.go:22`][dex:dex/asset.go:22]) plus buffers
   ([`client/core/bond.go:159-160`][dex:client/core/bond.go:159-160]). Core refunds it at its
@@ -252,7 +253,8 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   ([`client/core/core.go:5234-5252`][dex:client/core/core.go:5234-5252]), and a refund needs
   that wallet unlocked ([`client/core/bond.go:523-527`][dex:client/core/bond.go:523-527]).
   Without this, a bond in another asset, on a disabled account, or with the target tier at 0
-  (renewal off, a restored account) is not refunded after a restart.
+  (renewal off) is not refunded after a restart. If an unlock fails, Skarb treats it as a failed
+  `Login`: it shows the error and opens no wallet page.
 - **User-facing text:** trade from one install at a time; a lost DEX database loses swaps in
   flight, and after a restore from the seed a bond in its last ~30 days, or one sent and not yet
   stored by the server, is not found and its coins are lost; keep the computer on with Skarb
@@ -273,10 +275,11 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   send's inputs. A send whose picked coin a `FundOrder` locked after the coin list was shown is
   refused.
 - **Item 14.** Delete, reset and switch, each tried with an active match, with an unrefunded
-  bond and with a BTC or LTC balance at the dust limit: each is refused, naming that blocker and
-  its way out (for a bond, its refund date: its lock time). With bond renewal turned off, core
-  posts no new bond; Skarb is restarted before the last bond's lock time, the bond refunds after
-  it with the target tier at 0, and the refusal for it lifts. With a bond
+  bond, with a bond broadcast and not yet confirmed, and with a BTC or LTC balance at the dust
+  limit: each is refused, naming that blocker and its way out (for a bond, its refund date: its
+  lock time). With bond renewal turned off, core posts no new bond; Skarb is restarted before
+  the last bond's lock time, the bond refunds after it with the target tier at 0, and the
+  refusal for it lifts. With a bond
   unrefunded and Skarb started while the server is stopped, the refusal names disabling the
   account; once it is
   disabled, the bond refunds after its lock time passes on chain, the server still stopped. If
@@ -363,8 +366,11 @@ Skarb pins a commit with the fix. **Its test**, in `client/core` against the VAR
 `dcrdex` harnesses: a second core, restored from the first one's seed into a fresh DB, runs
 `DiscoverAccount` once, and core's DB then holds the server's bond under the restored account,
 with the key index the first core posted it under, with no reconnect. It fails on the code
-before the fix. The restored account's target tier is 0, so its refund after a restart relies on
-step 5's wallet unlock.
+before the fix. The same test checks that a bond found under a key index that discovery then
+skips is not kept. Discovery leaves the restored account's target tier at 0, so Skarb then sets
+the target tier to what a first turn-on sets (`UpdateBondOptions`, DEX
+[`client/core/bond.go:1137`][dex:client/core/bond.go:1137]): renewal is on unless the user turns
+it off.
 
 **Tests:**
 
@@ -409,7 +415,8 @@ the core fix's test.
   0.025 LTC. Each stays at or above its chain's minimum bond, the asset driver's `MinBondSize`
   at that asset's `maxFeeRate` in the server's markets config. At a BTC rate of 50 sat/vB, as on
   dex.decred.org, and the sample config's LTC rate of 20, that is 0.0002235 BTC and 0.0000894
-  LTC.
+  LTC. The 0.0003 BTC assumes the server's BTC `maxFeeRate` of 50; a higher rate raises the
+  minimum (0.000447 BTC at 100).
 - Agreement to item 14's accepted risk for a bond broadcast but not yet stored by the server.
 
 ## Order and dependencies

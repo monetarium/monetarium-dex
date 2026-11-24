@@ -201,8 +201,9 @@ Moved here from the PoC file; the number is kept.
   - a restore from the trading wallet's seed into a fresh profile, holding a bond the server
     still reports and BTC and LTC balances: the bond is found at discovery and, after a restart
     before its lock time, refunded, and the balances show;
-  - deletion, reset and switch attempts while a match is active, while a bond is unrefunded, and
-    while a BTC or LTC balance is at or above that chain's dust limit: each is refused.
+  - deletion, reset and switch attempts while a match is active, while a bond is unrefunded (one
+    broadcast and not yet stored by the server included), and while a BTC or LTC balance is at
+    or above that chain's dust limit: each is refused.
 
 ### 15. Skarb stays up for each redeem before the counterparty's lock time
 
