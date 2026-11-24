@@ -19,7 +19,7 @@ Versions read, each citation linking to the file at that commit:
 
 - DEX = this repository, `main` at `59769704`
 - SKARB = `skarb-wallet` `97cac0ab` (main)
-- WAL = `monetarium-wallet` `42aa5102` (main)
+- WAL = `monetarium-wallet` `2c5d237e` (main)
 
 Skarb today has no DEX code: the DCRDEX integration it inherited from Cryptopower was removed,
 and stubs stand in for it (SKARB
@@ -33,13 +33,28 @@ Item 11's maturity and dust fixes are on wallet main and in no tag. Skarb's vend
 peer instead of disconnecting it (SKARB [`go.mod:127-132`][skarb:go.mod:127-132]), and others in
 SPV relay, coin selection, the spendable-output list, VSP fee payment and transaction queries.
 
-- Every difference between the vendored copy and `v1.3.10` is listed, each one either ported
-  into wallet main with its test, already covered there, or dropped with a reason.
-- A wallet tag is cut from main at or past `42aa5102` and past those ports, so it has the
-  maturity and dust fixes.
+The port into wallet main, with related wallet fixes, is merged at WAL: wallet PRs #25-#32,
+PRs #34-#37, #39, #40 and #47-#52, with #54 (a test fix) and #56 (a vspd client bump), and the
+follow-up fixes, PRs #64-#71, #78, #81, #83 and #84. The copy's change for duplicate
+transaction messages is dropped, and wallet main still disconnects a peer for an unrequested transaction
+(WAL [`p2p/peering.go:1255-1259`][wallet:p2p/peering.go:1255-1259]): the disconnect it worked
+around came from the protocol version that wallet PR #24, in `v1.3.14`, moves to 13.
+What remains is the release:
 
-**Done when** the list is complete, the tag exists, its own tests pass, and this repository's
-pin (PoC plan, Versions) moves to it with step 1a's per-PR harness job green.
+- A release candidate, built by hand with no tag: a wallet main commit at or past WAL, taken
+  once one more follow-up PR is merged, built against the node commit the next node release
+  will be tagged at. It passes the simnet check named in wallet PR #32's live check (a relayed VSP fee
+  transaction is held published and resent to a new peer) three runs out of three, and the
+  wallet daemon on it runs on testnet.
+- The Skarb developer runs a Skarb build on the candidate, step 2's branch built early, on
+  testnet. A "received unrequested tx" disconnect in its SPV log reopens the dropped
+  duplicate-message change above.
+- The tag ships with the next node release, since the release script releases node, wallet and
+  ctl together. It is cut on top of the candidate, by a commit that pins the wallet to that node
+  release and bumps the version constants, so it has the maturity and dust fixes.
+
+**Done when** the items above are done, the tag's own tests pass, and this repository's pins
+(PoC plan, Versions) move to that release with the PoC plan's step 1a per-PR harness job green.
 
 ## Step 2. Skarb on the wallet release, `skarb-wallet`
 
@@ -72,8 +87,8 @@ rules stay in the driver. The type differs from the native one only where the ho
 - it funds and receives from the given account only;
 - it unlocks and locks only that account, which carries its own passphrase, set by Skarb (step
   5). A Skarb account has none, and the wallet refuses a per-account unlock without one (WAL
-  [`wallet/wallet.go:2422-2431`][wallet:wallet/wallet.go:2422-2431]), so the native type's
-  account setup and unlock do not carry over unchanged;
+  [`wallet/udb/addressmanager.go:1614-1617`][wallet:wallet/udb/addressmanager.go:1614-1617]),
+  so the native type's account setup and unlock do not carry over unchanged;
 - it is not seeded, and it supports a password change. Core refuses a password change on a
   seeded type (DEX [`client/core/core.go:3949-3951`][dex:client/core/core.go:3949-3951]), and
   the native type is seeded ([`client/asset/mon/mon.go:284`][dex:client/asset/mon/mon.go:284]).
@@ -340,13 +355,15 @@ closed and restored from the trading wallet's seed into a fresh profile.
 ## What is needed from the client
 
 - The bond assets and amount on the Monetarium DEX server.
-- The wallet maintainer's merge and tag for step 1.
+- The Skarb developer's testnet run of a Skarb build on step 1's release candidate.
+- Who cuts step 1's wallet tag, which ships with the next node release, and its version.
 - The Skarb maintainer's agreement and review for steps 2, 5, 6 and 7, and Skarb releases after
   step 2 and once steps 5-7 are done.
 
 ## Order and dependencies
 
-- **Step 1** first; **step 2** needs it.
+- **Step 1** first. Step 1's testnet run needs **step 2**'s branch, which the Skarb developer
+  builds on step 1's release candidate; step 2's release needs the tag.
 - **Steps 3 and 4** live in this repository and need neither, so they can run alongside steps
   1 and 2.
 - **Step 5** needs steps 2, 3 and 4. **Steps 6 and 7** need step 5.
@@ -375,12 +392,13 @@ closed and restored from the trading wallet's seed into a fresh profile.
 [skarb:libwallet/assets/wallet/wallet_shared.go:712]: https://github.com/monetarium/skarb-wallet/blob/97cac0abbb2bfbcc118f0683dbe68685b18c6443/libwallet/assets/wallet/wallet_shared.go#L712
 [skarb:libwallet/assets/wallet/wallet_utils.go:227]: https://github.com/monetarium/skarb-wallet/blob/97cac0abbb2bfbcc118f0683dbe68685b18c6443/libwallet/assets/wallet/wallet_utils.go#L227
 [dex:client/asset/btc/btc.go:139-140]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/asset/btc/btc.go#L139-L140
-[wallet:wallet/wallet.go:2400]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L2400
-[wallet:wallet/wallet.go:2422-2431]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/wallet.go#L2422-L2431
+[wallet:wallet/wallet.go:2400]: https://github.com/monetarium/monetarium-wallet/blob/2c5d237e7403ff46684b07327a5d2d2f83afc878/wallet/wallet.go#L2400
 [dex:client/core/bond.go:159-160]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L159-L160
 [dex:client/core/bond.go:1137]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L1137
 [dex:dex/asset.go:22]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/dex/asset.go#L22
 [dex:client/core/account.go:69-78]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/account.go#L69-L78
 [dex:client/core/bond.go:724-743]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L724-L743
-[wallet:wallet/udb/addressmanager.go:1566-1574]: https://github.com/monetarium/monetarium-wallet/blob/42aa5102b0a29e9e741cad6532d8fce749f120fa/wallet/udb/addressmanager.go#L1566-L1574
+[wallet:p2p/peering.go:1255-1259]: https://github.com/monetarium/monetarium-wallet/blob/2c5d237e7403ff46684b07327a5d2d2f83afc878/p2p/peering.go#L1255-L1259
+[wallet:wallet/udb/addressmanager.go:1566-1574]: https://github.com/monetarium/monetarium-wallet/blob/2c5d237e7403ff46684b07327a5d2d2f83afc878/wallet/udb/addressmanager.go#L1566-L1574
+[wallet:wallet/udb/addressmanager.go:1614-1617]: https://github.com/monetarium/monetarium-wallet/blob/2c5d237e7403ff46684b07327a5d2d2f83afc878/wallet/udb/addressmanager.go#L1614-L1617
 [dex:client/core/wallet.go:151]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/wallet.go#L151
