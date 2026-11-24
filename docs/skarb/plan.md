@@ -7,8 +7,8 @@ at start, lock times of 8 and 20 hours) holds here unchanged. SKA trading and mo
 are later stages.
 
 Not covered here: Skarb's trading screens (markets, the order form, the BTC and LTC wallet
-pages), which get a plan of their own. The steps below build what items 11-15 need underneath
-them.
+pages, the choice of bond coin), which get a plan of their own. The steps below build what
+items 11-15 need underneath them.
 
 Each step below ends when its named tests pass. As in the PoC plan
 ([`../var-port/plan.md`](../var-port/plan.md)), each test for an item is written before the code
@@ -272,6 +272,9 @@ native SPV wallets.
   below the dust limit and nothing else: each warns, naming the remainder, then goes ahead. With
   none of them: each warns, then goes ahead, and turning trading on with another wallet then
   initializes core from that wallet's seed. Turning trading on while core is initialized is refused.
+  The cases with a bond (the refusal, renewal off, the disabled account's refund) each run
+  three times, with a VAR, a BTC and an LTC bond the test posts through core; with a BTC or LTC
+  bond the refusal names the bond among its blockers.
 - **Trading account sends.** A send from the trading account in Skarb succeeds with the account
   locked. After Skarb's lock following that send has run, a swap, a redeem and a refund from the
   account each succeed.
@@ -335,7 +338,11 @@ closed and restored from the trading wallet's seed into a fresh profile.
   the moment of the restore, and whether core finds it. If it does not, the outcome goes to the
   client before item 14 changes.
 
-**Done when** the test passes, and the measurement's outcome is written into item 14.
+The test and the measurement each run three times, a restore each, with a VAR, a BTC and an
+LTC bond.
+
+**Done when** the test passes in each run, and the measurement's outcomes are written into item
+14.
 
 ## Placed, or dropped with a reason
 
@@ -354,7 +361,9 @@ closed and restored from the trading wallet's seed into a fresh profile.
 
 ## What is needed from the client
 
-- The bond assets and amount on the Monetarium DEX server.
+- The bond amounts on the Monetarium DEX server, where the user bonds in VAR, BTC or LTC: the
+  proposal is 1/400 of the markets' VAR lot, as on dex.decred.org (0.1 DCR at a 40 DCR lot),
+  and in BTC and LTC the same value at the rate on the day the amounts are set.
 - The Skarb developer's testnet run of a Skarb build on step 1's release candidate.
 - Who cuts step 1's wallet tag, which ships with the next node release, and its version.
 - The Skarb maintainer's agreement and review for steps 2, 5, 6 and 7, and Skarb releases after
