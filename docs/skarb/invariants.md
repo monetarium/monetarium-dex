@@ -6,14 +6,13 @@ They were tested on the DEX driver's own RPC and SPV wallets, on the `monetarium
 library this repository pins. Skarb builds against its own vendored copy of that library (SKARB
 [`go.mod:132`][skarb:go.mod:132]), which also signs the DEX's VAR transactions (DEX
 [`client/asset/mon/spv.go:753`][dex:client/asset/mon/spv.go:753]), so items 1 and 2 carry over to
-Skarb once the plan's first stage replaces that copy with a wallet release at or past the commit
-this repository pins. This file
-adds what Skarb changes: the VAR wallet is Skarb's own, joined to the DEX through a seam; the
-users are real users on mainnet; and the app runs only while the user keeps it open.
+Skarb once steps 1-2 of [`plan.md`](plan.md) replace that copy with a wallet release at or past
+the commit this repository pins. This file adds what Skarb changes: the VAR wallet is Skarb's
+own, joined to the DEX through a seam; the users are real users on mainnet; and the app runs only
+while the user keeps it open.
 
 As in the PoC file, an invariant here is a failure that is silent or shows up late. How each
-test runs is the job of the Skarb-stage plan, which comes after this file; until then item 11's
-tests stay in the PoC plan's "Item 11" section.
+test runs is the job of the Skarb-stage plan, [`plan.md`](plan.md).
 
 ## The shape these invariants assume
 
@@ -42,14 +41,19 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
   [`dex/asset.go:17-18`][dex:dex/asset.go:17-18]). They are global and fixed on mainnet, so VAR
   cannot have its own.
 - **Accepted risks:** a lost DEX database is not recoverable from the seed for swaps in flight
-  and bonds already expired, and there is no database export (item 14); a swap fails, and a
-  taker's coins can be lost, when Skarb cannot run a redeem before its deadline because the lid
-  is closed, the computer is shut down, restarted (an operating-system update included) or
-  loses power, Skarb is forced to quit or crashes, or the network is lost (item 15). A maker
-  redeeming a BTC or LTC contract just before the taker's lock time can lose its coins by the
-  same causes; the plan guards that case with a margin instead of accepting it. Two installs
-  restored from one seed and run at once share one DEX account and the same coins (item
-  13); Skarb's user-facing text says to trade from one install at a time.
+  or for a bond in its last ~30 days, whose coins are lost, and there is no database export
+  (item 14), and a bond stays locked while the server is gone with an order booked (item 14),
+  and a bond broadcast but not yet stored by the server is lost on a restore from the seed (item
+  14, awaiting the client's agreement); a swap fails, and a taker's coins can be lost, when
+  Skarb cannot run a redeem before its deadline because the lid is closed, the computer is shut
+  down, restarted (an operating-system update included) or loses power, Skarb is forced to quit
+  or crashes, or the network is lost (item 15). A maker redeeming a BTC or LTC contract just
+  before the taker's lock time can lose its coins by the same causes; the plan narrows that case
+  with a margin, and accepts what remains: a redeem sent before the margin and still unconfirmed
+  when the taker can refund. Idle sleep after the computer refuses Skarb's sleep inhibitor is
+  accepted too (item 15). Two installs restored from one seed and run at once share one DEX
+  account and the same coins (item 13); Skarb's user-facing text says to trade from one install
+  at a time.
 
 Versions read, each citation linking to the file at that commit:
 
@@ -103,7 +107,7 @@ Moved here from the PoC file; the number is kept.
 - **Exposed by:** a trading account holding an SKA1 output, a staker-fee output and a VAR
   output, read through the seam Skarb uses: funding takes only the VAR output, and `Available`
   leaves out the staker-fee output; and the driver's SPV-wallet tests for these three rules run
-  against that seam over an in-process wallet.
+  against that seam, with its harness tests over an in-process wallet.
 
 ## Failed swap or rejected order
 
@@ -158,26 +162,48 @@ Moved here from the PoC file; the number is kept.
   - **The derivation:** if a later Skarb version derives the DEX app seed differently, a
     restore yields another seed, and the BTC and LTC funds and the bonds do not show up. Nothing
     reports it.
-  - **Bonds:** after a restore, core rebuilds the bonds the server reports and finds their
-    keys from the app seed. The server reports only active bonds (DEX
-    [`client/core/core.go:6705-6733`][dex:client/core/core.go:6705-6733]), so a bond that
-    expired before the restore is not recovered.
+  - **Bonds:** after a restore, core rebuilds the bonds the server reports and finds their keys
+    from the app seed. The server reports a bond only while its lock time is more than the
+    server's bond expiry (30 days on mainnet) away (DEX
+    [`server/auth/auth.go:1513`][dex:server/auth/auth.go:1513],
+    [`dex/asset.go:22`][dex:dex/asset.go:22],
+    [`client/core/core.go:6705-6733`][dex:client/core/core.go:6705-6733]). So after a seed
+    restore, a bond in its last ~30 days is not found, and its coins are lost. With bond renewal
+    on there is usually one such bond. Two conditions hold this up, both closed by the plan: on
+    a fresh profile core keeps a reported bond only with the plan's core fix, since `findBond`
+    saves it before the restored account is in the DB and drops it on the error (DEX
+    [`client/core/core.go:6747-6751`][dex:client/core/core.go:6747-6751],
+    [`:4301-4306`][dex:client/core/core.go:4301-4306]); and core refunds a bond only while its
+    wallet is unlocked, which `Login` does only for the current bond asset's wallet on an
+    enabled account with a target tier set
+    ([`client/core/core.go:5234-5252`][dex:client/core/core.go:5234-5252],
+    [`client/core/bond.go:523-527`][dex:client/core/bond.go:523-527]), so Skarb unlocks its
+    trading wallets after `Login`. A bond broadcast but not yet stored by the server, until it
+    has the server's bond confirmations and the client's postbond has reached the server (longer
+    while the server cannot be reached, and again with each renewal), is reported by nobody, and
+    a restore from the seed loses it.
   - **Swaps in flight** need the DEX database: a fresh instance "lacks any order or match
     history" (DEX [`client/core/core.go:4253-4255`][dex:client/core/core.go:4253-4255]).
 
   So deleting the trading wallet, resetting the DEX data or switching the trading wallet in-app
   can strand funds that a seed restore does not bring back.
 - **Accepted risk:** losing the DEX database outside the app (a lost device, a wiped app
-  directory) while a swap is in flight or after a bond has expired. There is no database
-  export. Skarb states this limit in its user-facing text, and a reset with no open match, no
-  unrefunded bond and no BTC or LTC balance goes ahead only after a warning.
+  directory) while a swap is in flight or a bond is in its last ~30 days. There is no database
+  export. Skarb states this limit in its user-facing text, and a deletion, reset or switch with
+  no active match, no unrefunded bond and no BTC or LTC balance at or above that chain's dust
+  limit goes ahead only after a warning. Also accepted: if the server goes away while an order
+  is booked, the account cannot be disabled and the order cannot be canceled, so the bond stays
+  locked until the server returns. Also accepted, awaiting the client's agreement: a bond
+  broadcast but not yet stored by the server is lost on a restore from the seed.
 - **Exposed by:**
   - a fixed test vector: a given trading-wallet seed gives a given DEX app seed in every
     version;
-  - a restore from the trading wallet's seed into a fresh profile, holding an active bond and
-    BTC and LTC balances: the bond is found and later refunded, and the balances show;
-  - deletion, reset and switch attempts while a match is open, while a bond is unrefunded, and
-    while a BTC or LTC balance is non-zero: each is refused.
+  - a restore from the trading wallet's seed into a fresh profile, holding a bond the server
+    still reports and BTC and LTC balances: the bond is found at discovery and, after a restart
+    before its lock time, refunded, and the balances show;
+  - deletion, reset and switch attempts while a match is active, while a bond is unrefunded (one
+    broadcast and not yet stored by the server included), and while a BTC or LTC balance is at
+    or above that chain's dust limit: each is refused.
 
 ### 15. Skarb stays up for each redeem before the counterparty's lock time
 
@@ -207,8 +233,8 @@ Moved here from the PoC file; the number is kept.
   background apps. Core unlocks the trading wallet with the password the DEX stores for it,
   and does not check it while the wallet is unlocked (DEX
   [`client/core/wallet.go:167-169`][dex:client/core/wallet.go:167-169]): a spending passphrase
-  changed in Skarb shows only when core next unlocks the locked wallet, to place an order,
-  resume trades at login, or run a swap, redeem or refund.
+  changed in Skarb shows only when core next unlocks the locked wallet, to place an order, at
+  each login by Skarb's unlock after it, or run a swap, redeem or refund.
 - **What Skarb does:** while any match of this account is active (neither complete nor
   refunded), Skarb warns on quit, naming the swap and its deadline and asking to confirm, gives
   the same warning when the user turns off the trading wallet's sync, which stops its network
@@ -221,8 +247,9 @@ Moved here from the PoC file; the number is kept.
   [`client/core/core.go:3912`][dex:client/core/core.go:3912]).
 - **Accepted risk:** a closed lid, a shutdown or restart (an operating-system update included),
   a power loss, a forced quit, a crash or a network loss that keeps Skarb from running a redeem
-  before its deadline. Not accepted: the maker's late BTC or LTC redeem above, which the plan
-  guards with a margin.
+  before its deadline; idle sleep after the computer refuses Skarb's sleep inhibitor; and the
+  maker's late BTC or LTC redeem above only when it was sent before the margin the plan guards
+  it with and is still unconfirmed when the taker can refund.
 - **Exposed by:** quitting Skarb, or turning off the trading wallet's sync, with an active
   match: the user is told which swap and until when, and the action waits for confirmation;
   the computer's idle sleep held off while any match is active and released after the last one
@@ -273,6 +300,12 @@ Moved here from the PoC file; the number is kept.
 [dex:client/core/trade.go:2111]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/trade.go#L2111
 [dex:client/core/trade.go:3028]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/trade.go#L3028
 [dex:dex/asset.go:17-18]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/dex/asset.go#L17-L18
+[dex:server/auth/auth.go:1513]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/server/auth/auth.go#L1513
+[dex:dex/asset.go:22]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/dex/asset.go#L22
+[dex:client/core/core.go:6747-6751]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L6747-L6751
+[dex:client/core/core.go:4301-4306]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L4301-L4306
+[dex:client/core/core.go:5234-5252]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/core.go#L5234-L5252
+[dex:client/core/bond.go:523-527]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/bond.go#L523-L527
 [node:internal/mempool/mempool.go:1055-1058]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/mempool/mempool.go#L1055-L1058
 [node:internal/blockchain/validate.go:4247-4258]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/blockchain/validate.go#L4247-L4258
 [skarb:go.mod:132]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/go.mod#L132
