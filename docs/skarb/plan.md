@@ -59,9 +59,8 @@ What remains is the release:
 ## Step 2. Skarb on the wallet release, `skarb-wallet`
 
 Skarb drops `_vendored/monetarium-wallet` and the `replace` line, takes the step 1 tag and the
-node modules it needs (`v1.3.14` or later), and ships a release. Importing this repository later
-pulls in node modules `v1.3.14` and the wallet at `42aa5102` or later, and the vendored copy is
-`v1.3.10` on node modules `v1.3.6`.
+node release that tag pins, and ships a release. Importing this repository later pulls in the
+same node and wallet release; the vendored copy is `v1.3.10` on node modules `v1.3.6`.
 
 **Tests**, item 11, on simnet (coinbase maturity 16), in `skarb-wallet`:
 
@@ -69,9 +68,9 @@ pulls in node modules `v1.3.14` and the wallet at `42aa5102` or later, and the v
   output before maturity in a ticket purchase, which uses the wallet's own input selection (a
   regular send already skips it). The pass condition is "coin not selected": the purchase is
   then funded from other coins or refused.
-- **Dust.** A Skarb-built transaction (a send, a ticket) must carry no change the node calls
-  dust: either no change output, or change of at least the node's threshold. The case is change
-  just above the vendored copy's threshold and below the node's.
+- **Dust.** A Skarb-built transaction (a send, a ticket, a VSP fee) must carry no change the
+  node calls dust: either no change output, or change of at least the node's threshold. The case
+  is change just above the vendored copy's threshold and below the node's.
 
 **Done when** both tests pass and the Skarb release is out.
 
@@ -161,11 +160,10 @@ default contract lock time moved past the margin.
 
 ## Step 5. Trading in Skarb, `skarb-wallet`
 
-Items 13, 14 and 15, the parts that live in Skarb's code. Skarb embeds DEX core from this
-repository: its `go.mod` replaces `decred.org/dcrdex` with this repository at a pinned commit
-past step 4. It hands its trading wallet to step 3's type through that step's exported
-function. BTC and LTC use DCRDEX's
-native SPV wallets.
+Items 11 (the order case), 13, 14 and 15, the parts that live in Skarb's code. Skarb embeds DEX
+core from this repository: its `go.mod` replaces `decred.org/dcrdex` with this repository at a
+pinned commit past steps 3 and 4. It hands its trading wallet to step 3's type through that
+step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
 
 - **Turning trading on.** The user picks one Skarb wallet. Skarb creates a dedicated trading
   account in it, gives that account its own passphrase, equal to the wallet's spending
@@ -331,15 +329,16 @@ Item 15's guards.
 ## Step 7. Restore from the trading wallet's seed, `skarb-wallet`
 
 Item 14's restore case, against simnet harnesses: this repository's VAR, BTC, LTC and `dcrdex`
-harnesses. A Skarb profile trades, holds an active bond and BTC and LTC balances, and is then
-closed and restored from the trading wallet's seed into a fresh profile. A fresh profile has no
-DEX account, so the server's bonds are found by account discovery (`DiscoverAccount`), not by
-`Login`. On restore, Skarb runs `InitializeClient` and `Login`, hands core the VAR trading
-wallet as in step 5, creates the BTC and LTC wallets, syncs all three, and only then runs
-discovery: core needs a connected wallet for a bond's
-coin, and the bond keys `Login` derives. A wallet that does not hold the bond's transaction
-walks back from its tip until a day before a bond with core's default lock time was posted,
-about 61 days before the lock time on mainnet (DEX
+harnesses. A Skarb profile trades, holds a bond the server still reports and BTC and LTC
+balances, and is then closed and restored from the trading wallet's seed into a fresh profile. A
+fresh profile has no DEX account, so the server's bonds are found by account discovery
+(`DiscoverAccount`), not by `Login`. Each time trading is turned on, a restore included, Skarb
+runs `InitializeClient` and `Login`, hands the VAR trading wallet to step 3's type and creates
+it in core, creates the BTC and LTC wallets, syncs all three, and only then runs discovery: core
+needs a connected wallet for a bond's coin, and the bond keys `Login` derives. Discovery runs on
+every turn-on because Skarb cannot tell whether a seed already had a DEX account. A wallet that
+does not hold the bond's transaction walks back from its tip until a day before a bond with
+core's default lock time was posted, about 61 days before the lock time on mainnet (DEX
 [`client/core/core.go:6710-6713`][dex:client/core/core.go:6710-6713]). Until discovery returns,
 Skarb shows a restoring state, not a frozen window.
 

@@ -42,15 +42,15 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
   cannot have its own.
 - **Accepted risks:** a lost DEX database is not recoverable from the seed for swaps in flight
   or for a bond in its last ~30 days, whose coins are lost, and there is no database export
-  (item 14); a swap fails, and a
-  taker's coins can be lost, when Skarb cannot run a redeem before its deadline because the lid
-  is closed, the computer is shut down, restarted (an operating-system update included) or
-  loses power, Skarb is forced to quit or crashes, or the network is lost (item 15). A maker
-  redeeming a BTC or LTC contract just before the taker's lock time can lose its coins by the
-  same causes; the plan narrows that case with a margin, and accepts what remains: a redeem
-  sent before the margin and still unconfirmed when the taker can refund. Idle sleep after the
-  computer refuses Skarb's sleep inhibitor is accepted too (item 15). Two installs
-  restored from one seed and run at once share one DEX account and the same coins (item
+  (item 14), and a bond stays locked while the server is gone with an order booked (item 14); a
+  swap fails, and a taker's coins can be lost, when Skarb cannot run a redeem before its
+  deadline because the lid is closed, the computer is shut down, restarted (an operating-system
+  update included) or loses power, Skarb is forced to quit or crashes, or the network is lost
+  (item 15). A maker redeeming a BTC or LTC contract just before the taker's lock time can lose
+  its coins by the same causes; the plan narrows that case with a margin, and accepts what
+  remains: a redeem sent before the margin and still unconfirmed when the taker can refund. Idle
+  sleep after the computer refuses Skarb's sleep inhibitor is accepted too (item 15). Two
+  installs restored from one seed and run at once share one DEX account and the same coins (item
   13); Skarb's user-facing text says to trade from one install at a time.
 
 Versions read, each citation linking to the file at that commit:
@@ -175,17 +175,18 @@ Moved here from the PoC file; the number is kept.
   can strand funds that a seed restore does not bring back.
 - **Accepted risk:** losing the DEX database outside the app (a lost device, a wiped app
   directory) while a swap is in flight or a bond is in its last ~30 days. There is no database
-  export. Skarb states this limit in its user-facing text, and a reset with no open match, no
-  unrefunded bond and no BTC or LTC balance at or above that chain's dust limit goes ahead only
-  after a warning. Also accepted: if the server goes away while an order is booked, the account
-  cannot be disabled and the order cannot be canceled, so the bond stays locked until the server
-  returns.
+  export. Skarb states this limit in its user-facing text, and a deletion, reset or switch with
+  no active match, no unrefunded bond and no BTC or LTC balance at or above that chain's dust
+  limit goes ahead only after a warning. Also accepted: if the server goes away while an order
+  is booked, the account cannot be disabled and the order cannot be canceled, so the bond stays
+  locked until the server returns.
 - **Exposed by:**
   - a fixed test vector: a given trading-wallet seed gives a given DEX app seed in every
     version;
-  - a restore from the trading wallet's seed into a fresh profile, holding an active bond and
-    BTC and LTC balances: the bond is found and later refunded, and the balances show;
-  - deletion, reset and switch attempts while a match is open, while a bond is unrefunded, and
+  - a restore from the trading wallet's seed into a fresh profile, holding a bond the server
+    still reports and BTC and LTC balances: the bond is found and later refunded, and the
+    balances show;
+  - deletion, reset and switch attempts while a match is active, while a bond is unrefunded, and
     while a BTC or LTC balance is at or above that chain's dust limit: each is refused.
 
 ### 15. Skarb stays up for each redeem before the counterparty's lock time
