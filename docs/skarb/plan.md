@@ -203,8 +203,10 @@ native SPV wallets.
     does not tell, cannot be the trading wallet.
 - **DEX login at start.** With trading on, Skarb's startup passphrase is the DEX app password:
   the one prompt at start also calls `Login`, and Skarb opens its wallet pages only after it
-  returns without error. Removing the startup passphrase is refused while trading is on;
-  changing it calls `ChangeAppPass`
+  returns without error. Until then Skarb shows a progress state with the stage core reports
+  ([`client/core/core.go:4614`][dex:client/core/core.go:4614],
+  [`client/core/core.go:4666-4670`][dex:client/core/core.go:4666-4670]). Removing the startup
+  passphrase is refused while trading is on; changing it calls `ChangeAppPass`
   ([`client/core/core.go:3493`][dex:client/core/core.go:3493]).
 - **Spending passphrase.** A change of the trading wallet's spending passphrase also sets the
   trading account's passphrase to the new one and calls `SetWalletPassword` for VAR
@@ -245,7 +247,8 @@ native SPV wallets.
   to 0 ([`client/core/bond.go:1137`][dex:client/core/bond.go:1137]); core then posts no new
   bond, and the ones posted refund after their lock times, on the same conditions.
 - **User-facing text:** trade from one install at a time; a lost DEX database loses swaps in
-  flight and expired bonds; keep the computer on with Skarb running until swaps complete.
+  flight, and after a restore from the seed a bond in its last ~30 days is not found and its
+  coins are lost; keep the computer on with Skarb running until swaps complete.
 
 **Tests**, in `skarb-wallet`, those that trade against this repository's VAR, BTC, LTC and
 `dcrdex` simnet harnesses:
@@ -329,19 +332,33 @@ Item 15's guards.
 
 Item 14's restore case, against simnet harnesses: this repository's VAR, BTC, LTC and `dcrdex`
 harnesses. A Skarb profile trades, holds an active bond and BTC and LTC balances, and is then
-closed and restored from the trading wallet's seed into a fresh profile.
+closed and restored from the trading wallet's seed into a fresh profile. A fresh profile has no
+DEX account, so the server's bonds are found by account discovery (`DiscoverAccount`), not by
+`Login`. On restore, Skarb runs `InitializeClient` and `Login`, hands core the VAR trading
+wallet as in step 5, creates the BTC and LTC wallets, syncs all three, and only then runs
+discovery: core needs a connected wallet for a bond's
+coin, and the bond keys `Login` derives. A wallet that does not hold the bond's transaction
+walks back from its tip until a day before a bond with core's default lock time was posted,
+about 61 days before the lock time on mainnet (DEX
+[`client/core/core.go:6710-6713`][dex:client/core/core.go:6710-6713]). Until discovery returns,
+Skarb shows a restoring state, not a frozen window.
 
 **Tests:**
 
-- The bond is found and later refunded; the BTC and LTC balances show.
+- The bond is found and later refunded; the BTC and LTC balances show. Discovery starts in the
+  first quarter of the bond's life on the server, from its posting to its expiry (its lock time
+  minus the server's bond expiry).
+- **A bond late in its life.** Discovery starts in the last quarter of that life (on simnet,
+  where it lasts about 415 seconds, under 100 seconds before the expiry), and the bond is found
+  and later refunded.
 - **A measurement, not a pass or fail:** a bond broadcast but not yet accepted by the server at
   the moment of the restore, and whether core finds it. If it does not, the outcome goes to the
   client before item 14 changes.
 
-The test and the measurement each run three times, a restore each, with a VAR, a BTC and an
+The tests and the measurement each run three times, a restore each, with a VAR, a BTC and an
 LTC bond.
 
-**Done when** the test passes in each run, and the measurement's outcomes are written into item
+**Done when** the tests pass in each run, and the measurement's outcomes are written into item
 14.
 
 ## Placed, or dropped with a reason
@@ -361,9 +378,13 @@ LTC bond.
 
 ## What is needed from the client
 
-- The bond amounts on the Monetarium DEX server, where the user bonds in VAR, BTC or LTC: the
-  proposal is 1/400 of the markets' VAR lot, as on dex.decred.org (0.1 DCR at a 40 DCR lot),
-  and in BTC and LTC the same value at the rate on the day the amounts are set.
+- The bond amounts on the Monetarium DEX server, where the user bonds in VAR, BTC or LTC. VAR:
+  1/400 of the markets' VAR lot, as on dex.decred.org (0.1 DCR at a 40 DCR lot). BTC and LTC:
+  amounts the client names, revisited once VARDEX has a VAR price. Each amount is no lower than
+  its chain's minimum bond, the asset driver's `MinBondSize` at that asset's `maxFeeRate` in the
+  server's markets config. At dex.decred.org's BTC rate (50 sat/vB) and the sample config's LTC
+  rate (20) that is 0.0002235 BTC and 0.0000894 LTC; at the sample config's BTC rate (100) it is
+  0.000447 BTC.
 - The Skarb developer's testnet run of a Skarb build on step 1's release candidate.
 - Who cuts step 1's wallet tag, which ships with the next node release, and its version.
 - The Skarb maintainer's agreement and review for steps 2, 5, 6 and 7, and Skarb releases after
@@ -385,6 +406,9 @@ LTC bond.
 [dex:client/core/core.go:3949-3951]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L3949-L3951
 [dex:client/core/core.go:4442]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L4442
 [dex:client/core/core.go:4504-4519]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L4504-L4519
+[dex:client/core/core.go:4614]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L4614
+[dex:client/core/core.go:4666-4670]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L4666-L4670
+[dex:client/core/core.go:6710-6713]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L6710-L6713
 [dex:client/core/trade.go:1644-1650]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/trade.go#L1644-L1650
 [dex:client/core/trade.go:1683-1684]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/trade.go#L1683-L1684
 [dex:client/mnemonic/seed.go:94]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/mnemonic/seed.go#L94

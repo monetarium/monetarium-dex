@@ -41,7 +41,8 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
   [`dex/asset.go:17-18`][dex:dex/asset.go:17-18]). They are global and fixed on mainnet, so VAR
   cannot have its own.
 - **Accepted risks:** a lost DEX database is not recoverable from the seed for swaps in flight
-  and bonds already expired, and there is no database export (item 14); a swap fails, and a
+  or for a bond in its last ~30 days, whose coins are lost, and there is no database export
+  (item 14); a swap fails, and a
   taker's coins can be lost, when Skarb cannot run a redeem before its deadline because the lid
   is closed, the computer is shut down, restarted (an operating-system update included) or
   loses power, Skarb is forced to quit or crashes, or the network is lost (item 15). A maker
@@ -160,16 +161,20 @@ Moved here from the PoC file; the number is kept.
     restore yields another seed, and the BTC and LTC funds and the bonds do not show up. Nothing
     reports it.
   - **Bonds:** after a restore, core rebuilds the bonds the server reports and finds their
-    keys from the app seed. The server reports only active bonds (DEX
-    [`client/core/core.go:6705-6733`][dex:client/core/core.go:6705-6733]), so a bond that
-    expired before the restore is not recovered.
+    keys from the app seed. The server reports a bond only while its lock time is more than the
+    server's bond expiry (30 days on mainnet) away (DEX
+    [`server/auth/auth.go:1513`][dex:server/auth/auth.go:1513],
+    [`dex/asset.go:22`][dex:dex/asset.go:22],
+    [`client/core/core.go:6705-6733`][dex:client/core/core.go:6705-6733]). So after a seed
+    restore, a bond in its last ~30 days is not found, and its coins are lost. With bond renewal
+    on there is usually one such bond.
   - **Swaps in flight** need the DEX database: a fresh instance "lacks any order or match
     history" (DEX [`client/core/core.go:4253-4255`][dex:client/core/core.go:4253-4255]).
 
   So deleting the trading wallet, resetting the DEX data or switching the trading wallet in-app
   can strand funds that a seed restore does not bring back.
 - **Accepted risk:** losing the DEX database outside the app (a lost device, a wiped app
-  directory) while a swap is in flight or after a bond has expired. There is no database
+  directory) while a swap is in flight or a bond is in its last ~30 days. There is no database
   export. Skarb states this limit in its user-facing text, and a reset with no open match, no
   unrefunded bond and no BTC or LTC balance at or above that chain's dust limit goes ahead only
   after a warning. Also accepted: if the server goes away while an order is booked, the account
@@ -278,6 +283,8 @@ Moved here from the PoC file; the number is kept.
 [dex:client/core/trade.go:2111]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/trade.go#L2111
 [dex:client/core/trade.go:3028]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/client/core/trade.go#L3028
 [dex:dex/asset.go:17-18]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/dex/asset.go#L17-L18
+[dex:server/auth/auth.go:1513]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/server/auth/auth.go#L1513
+[dex:dex/asset.go:22]: https://github.com/monetarium/monetarium-dex/blob/49a91dc7b1d64a28bd35f6da020a5dd70fded300/dex/asset.go#L22
 [node:internal/mempool/mempool.go:1055-1058]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/mempool/mempool.go#L1055-L1058
 [node:internal/blockchain/validate.go:4247-4258]: https://github.com/monetarium/monetarium-node/blob/e1b5d1700798ce63f252f39354432a146f8e429c/internal/blockchain/validate.go#L4247-L4258
 [skarb:go.mod:132]: https://github.com/monetarium/skarb-wallet/blob/3e8790cfdeb84aae38805d2713b73ac6559303d0/go.mod#L132
