@@ -241,12 +241,22 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   balance: send it out. Otherwise they go ahead after a warning that names what a seed restore
   does not bring back, including a BTC or LTC remainder below the dust limit, which only the old
   trading wallet's seed recovers.
-- **Bond renewal.** Skarb has a control that turns bond renewal off, setting the target tier
-  to 0 ([`client/core/bond.go:1137`][dex:client/core/bond.go:1137]); core then posts no new
-  bond, and the ones posted refund after their lock times, on the same conditions.
+- **Bond renewal.** Skarb has a control that turns bond renewal off, setting the target tier to
+  0 ([`client/core/bond.go:1137`][dex:client/core/bond.go:1137]); core then posts no new bond,
+  and the ones posted refund after their lock times, on the same conditions.
+- **Wallet unlock after login.** At each app start with trading on, once `Login` has returned
+  (at turn-on, creating the wallets in core already unlocks them), Skarb unlocks the VAR, BTC
+  and LTC trading wallets in core (`OpenWallet`, DEX
+  [`client/core/core.go:3414`][dex:client/core/core.go:3414]). `Login` unlocks only the current
+  bond asset's wallet, and only on an enabled account with a target tier set
+  ([`client/core/core.go:5234-5252`][dex:client/core/core.go:5234-5252]), and a refund needs
+  that wallet unlocked ([`client/core/bond.go:523-527`][dex:client/core/bond.go:523-527]).
+  Without this, a bond in another asset, on a disabled account, or with the target tier at 0
+  (renewal off, a restored account) is not refunded after a restart.
 - **User-facing text:** trade from one install at a time; a lost DEX database loses swaps in
-  flight, and after a restore from the seed a bond in its last ~30 days is not found and its
-  coins are lost; keep the computer on with Skarb running until swaps complete.
+  flight, and after a restore from the seed a bond in its last ~30 days, or one sent and not yet
+  stored by the server, is not found and its coins are lost; keep the computer on with Skarb
+  running until swaps complete.
 
 **Tests**, in `skarb-wallet`, those that trade against this repository's VAR, BTC, LTC and
 `dcrdex` simnet harnesses:
@@ -265,7 +275,8 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
 - **Item 14.** Delete, reset and switch, each tried with an active match, with an unrefunded
   bond and with a BTC or LTC balance at the dust limit: each is refused, naming that blocker and
   its way out (for a bond, its refund date: its lock time). With bond renewal turned off, core
-  posts no new bond, and once the last one has refunded the refusal for it lifts. With a bond
+  posts no new bond; Skarb is restarted before the last bond's lock time, the bond refunds after
+  it with the target tier at 0, and the refusal for it lifts. With a bond
   unrefunded and Skarb started while the server is stopped, the refusal names disabling the
   account; once it is
   disabled, the bond refunds after its lock time passes on chain, the server still stopped. If
@@ -281,10 +292,10 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   account each succeed.
 - **Item 15, passphrases.** Removing the startup passphrase with trading on is refused. After
   changing it, Skarb's next start logs in to the DEX with the new one. After changing the
-  trading wallet's spending passphrase and locking the wallet: an order, a login, and a swap,
-  redeem and refund each succeed. A spending-passphrase change given a wrong startup passphrase
-  leaves the wallet as it was: the old spending and trading-account passphrases, and the stored
-  mnemonic opening with the old one.
+  trading wallet's spending passphrase and locking the wallet: an order, a login and Skarb's
+  unlock after it, and a swap, redeem and refund each succeed. A spending-passphrase change
+  given a wrong startup passphrase leaves the wallet as it was: the old spending and
+  trading-account passphrases, and the stored mnemonic opening with the old one.
 
 **Done when** these tests pass.
 
@@ -326,7 +337,7 @@ Item 15's guards.
 
 **Done when** these tests pass on macOS, Windows and Linux.
 
-## Step 7. Restore from the trading wallet's seed, `skarb-wallet`
+## Step 7. Restore from the trading wallet's seed, `skarb-wallet`, with a `client/core` fix here
 
 Item 14's restore case, against simnet harnesses: this repository's VAR, BTC, LTC and `dcrdex`
 harnesses. A Skarb profile trades, holds a bond the server still reports and BTC and LTC
@@ -342,23 +353,38 @@ core's default lock time was posted, about 61 days before the lock time on mainn
 [`client/core/core.go:6710-6713`][dex:client/core/core.go:6710-6713]). Until discovery returns,
 Skarb shows a restoring state, not a frozen window.
 
+On a fresh profile, core's discovery keeps none of the on-chain bonds the server reports:
+`findBond` saves each to the DB before the restored account is there, fails and drops it (DEX
+[`client/core/core.go:6747-6751`][dex:client/core/core.go:6747-6751]), and `discoverAccount`
+then saves the account with no bonds ([`:4301-4306`][dex:client/core/core.go:4301-4306]). The
+bond comes back only on a later connect, while the server still reports it. A fix in this
+repository's `client/core` keeps such a bond in the account, so `discoverAccount` saves it, and
+Skarb pins a commit with the fix. **Its test**, in `client/core` against the VAR, BTC, LTC and
+`dcrdex` harnesses: a second core, restored from the first one's seed into a fresh DB, runs
+`DiscoverAccount` once, and core's DB then holds the server's bond under the restored account,
+with the key index the first core posted it under, with no reconnect. It fails on the code
+before the fix. The restored account's target tier is 0, so its refund after a restart relies on
+step 5's wallet unlock.
+
 **Tests:**
 
-- The bond is found and later refunded; the BTC and LTC balances show. Discovery starts in the
-  first quarter of the bond's life on the server, from its posting to its expiry (its lock time
-  minus the server's bond expiry).
+- The bond is in core's account right after discovery, before any restart; Skarb is then
+  restarted before its lock time, and the bond refunds after it; the BTC and LTC balances show.
+  Discovery starts in the first quarter of the bond's life on the server, from its posting to
+  its expiry (its lock time minus the server's bond expiry).
 - **A bond late in its life.** Discovery starts in the last quarter of that life (on simnet,
-  where it lasts about 415 seconds, under 100 seconds before the expiry), and the bond is found
-  and later refunded.
-- **A measurement, not a pass or fail:** a bond broadcast but not yet accepted by the server at
-  the moment of the restore, and whether core finds it. If it does not, the outcome goes to the
-  client before item 14 changes.
+  where it lasts about 415 seconds, under 100 seconds before the expiry); the bond is in core's
+  account right after discovery and, after a restart before its lock time, refunds after it.
+- **A bond not yet stored by the server.** A first bond is broadcast and the old profile closed
+  before the bond's first confirmation; once the bond has the server's bond confirmations, the
+  profile is restored: discovery finds no account for the seed, and the server holds no such
+  bond (a record of item 14's accepted risk; it guards no code, so it is not seen failing
+  first).
 
-The tests and the measurement each run three times, a restore each, with a VAR, a BTC and an
-LTC bond.
+The tests each run three times, a restore each, with a VAR, a BTC and an LTC bond, and so does
+the core fix's test.
 
-**Done when** the tests pass in each run, and the measurement's outcomes are written into item
-14.
+**Done when** the core fix's test and these tests pass in each run.
 
 ## Placed, or dropped with a reason
 
@@ -370,23 +396,21 @@ LTC bond.
   running is item 15's accepted risk.
 - **A stale VAR wallet password after a spending-passphrase change:** step 5.
 - **Two installs restored from one seed:** an accepted risk, step 5's user-facing text.
-- **A bond not yet accepted at restore:** step 7.
+- **A bond broadcast but not yet stored by the server at restore:** an accepted risk (item 14),
+  tested in step 7.
 - **A DEX funding call between a send's coin listing and its publish** (item 13's second gap):
   step 5, by the lock from the send's build and the check of picked coins at that build.
 - **PoC items through Skarb's seam:** step 3. Only step 3's named tests are repeated.
 
 ## What is needed from the client
 
-- The bond amounts on the Monetarium DEX server, where the user bonds in VAR, BTC or LTC. VAR:
-  1/400 of the markets' VAR lot, as on dex.decred.org (0.1 DCR at a 40 DCR lot). BTC and LTC:
-  amounts the client names, revisited once VARDEX has a VAR price. Each amount is no lower than
-  its chain's minimum bond, the asset driver's `MinBondSize` at that asset's `maxFeeRate` in the
-  server's markets config. At a BTC rate of 50 sat/vB, as on dex.decred.org, and the sample
-  config's LTC rate of 20, that is 0.0002235 BTC and 0.0000894 LTC.
-- The Skarb developer's testnet run of a Skarb build on step 1's release candidate.
-- Who cuts step 1's wallet tag, which ships with the next node release, and its version.
-- The Skarb maintainer's agreement and review for steps 2, 5, 6 and 7, and Skarb releases after
-  step 2 and once steps 5-7 are done.
+- The bond amounts on the Monetarium DEX server, recommended and awaiting the client's
+  agreement: the user bonds in VAR, BTC or LTC; 10 VAR, 1/400 of a 4,000 VAR lot; 0.0003 BTC;
+  0.025 LTC. Each stays at or above its chain's minimum bond, the asset driver's `MinBondSize`
+  at that asset's `maxFeeRate` in the server's markets config. At a BTC rate of 50 sat/vB, as on
+  dex.decred.org, and the sample config's LTC rate of 20, that is 0.0002235 BTC and 0.0000894
+  LTC.
+- Agreement to item 14's accepted risk for a bond broadcast but not yet stored by the server.
 
 ## Order and dependencies
 
@@ -394,7 +418,11 @@ LTC bond.
   builds on step 1's release candidate; step 2's release needs the tag.
 - **Steps 3 and 4** live in this repository and need neither, so they can run alongside steps
   1 and 2.
-- **Step 5** needs steps 2, 3 and 4. **Steps 6 and 7** need step 5.
+- **Step 5** needs steps 2, 3 and 4. **Steps 6 and 7** need step 5, and step 7 also needs its
+  core fix, which lives in this repository and can run alongside steps 1-4.
+- **Handled outside this plan:** who cuts step 1's wallet tag and arranging the Skarb
+  developer's testnet run, with the wallet release work; the Skarb maintainer's review of steps
+  2, 5, 6 and 7 and the Skarb releases, agreed with the client at the first Skarb PR.
 - **The Skarb release that offers trading** needs steps 5-7.
 
 [dex:client/asset/mon/mon.go:284]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/asset/mon/mon.go#L284
@@ -433,3 +461,8 @@ LTC bond.
 [wallet:wallet/udb/addressmanager.go:1566-1574]: https://github.com/monetarium/monetarium-wallet/blob/2c5d237e7403ff46684b07327a5d2d2f83afc878/wallet/udb/addressmanager.go#L1566-L1574
 [wallet:wallet/udb/addressmanager.go:1614-1617]: https://github.com/monetarium/monetarium-wallet/blob/2c5d237e7403ff46684b07327a5d2d2f83afc878/wallet/udb/addressmanager.go#L1614-L1617
 [dex:client/core/wallet.go:151]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/wallet.go#L151
+[dex:client/core/core.go:3414]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L3414
+[dex:client/core/core.go:5234-5252]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L5234-L5252
+[dex:client/core/bond.go:523-527]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L523-L527
+[dex:client/core/core.go:6747-6751]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L6747-L6751
+[dex:client/core/core.go:4301-4306]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L4301-L4306
