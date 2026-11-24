@@ -382,9 +382,8 @@ LTC bond.
   1/400 of the markets' VAR lot, as on dex.decred.org (0.1 DCR at a 40 DCR lot). BTC and LTC:
   amounts the client names, revisited once VARDEX has a VAR price. Each amount is no lower than
   its chain's minimum bond, the asset driver's `MinBondSize` at that asset's `maxFeeRate` in the
-  server's markets config. At dex.decred.org's BTC rate (50 sat/vB) and the sample config's LTC
-  rate (20) that is 0.0002235 BTC and 0.0000894 LTC; at the sample config's BTC rate (100) it is
-  0.000447 BTC.
+  server's markets config. At a BTC rate of 50 sat/vB, as on dex.decred.org, and the sample
+  config's LTC rate of 20, that is 0.0002235 BTC and 0.0000894 LTC.
 - The Skarb developer's testnet run of a Skarb build on step 1's release candidate.
 - Who cuts step 1's wallet tag, which ships with the next node release, and its version.
 - The Skarb maintainer's agreement and review for steps 2, 5, 6 and 7, and Skarb releases after
