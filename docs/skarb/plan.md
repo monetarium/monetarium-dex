@@ -255,10 +255,19 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   Without this, a bond in another asset, on a disabled account, or with the target tier at 0
   (renewal off) is not refunded after a restart. If an unlock fails, Skarb treats it as a failed
   `Login`: it shows the error and opens no wallet page.
-- **User-facing text:** trade from one install at a time; a lost DEX database loses swaps in
-  flight, and after a restore from the seed a bond in its last ~30 days, or one sent and not yet
-  stored by the server, is not found and its coins are lost; keep the computer on with Skarb
-  running until swaps complete.
+- **User-facing text:** trade from one install at a time; a lost DEX database loses swaps in flight,
+  and after a restore from the seed a bond in its last ~30 days, or one sent and not yet stored by
+  the server, is not found and its coins are lost; keep the computer on with Skarb running until
+  swaps complete. The same text also says that, once trading is turned on, the BTC and LTC wallets
+  first sync from the network, which on mainnet takes time and disk space; it names no time or disk
+  figure.
+- **Known limit: LTC on testnet.** On 2026-11-24 the native LTC wallet did not sync on Litecoin's
+  testnet4: the peers it reaches drop within seconds, the seven peers DCRDEX hardcodes for testnet4
+  are unreachable (DEX [`client/asset/ltc/spv.go:61-70`][dex:client/asset/ltc/spv.go:61-70]), and
+  two of the three testnet4 DNS seeds in the LTC wallet's chain parameters fail to resolve. A
+  testnet trial with LTC trading cannot run until that changes; BTC syncs on testnet3. This plan's
+  tests run on simnet, apart from the quit-time measurement after step 6, on mainnet, and the
+  testnet run in step 1 carries no DEX code, so none of them is affected.
 
 **Tests**, in `skarb-wallet`, those that trade against this repository's VAR, BTC, LTC and
 `dcrdex` simnet harnesses:
@@ -289,7 +298,9 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   initializes core from that wallet's seed. Turning trading on while core is initialized is refused.
   The cases with a bond (the refusal, renewal off, the disabled account's refund) each run
   three times, with a VAR, a BTC and an LTC bond the test posts through core; with a BTC or LTC
-  bond the refusal names the bond among its blockers.
+  bond the refusal names the bond among its blockers. Core refunds a BTC or LTC bond only once
+  the median time of its chain's recent blocks passes the lock time, so these tests mine
+  a block on that chain every 15 s until then, as in the measured run below.
 - **Trading account sends.** A send from the trading account in Skarb succeeds with the account
   locked. After Skarb's lock following that send has run, a swap, a redeem and a refund from the
   account each succeed.
@@ -301,6 +312,49 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   trading-account passphrases, and the stored mnemonic opening with the old one.
 
 **Done when** these tests pass.
+
+**Measured** on 2026-11-24, before this step is built: the native BTC and LTC wallets inside Skarb.
+Skarb `3e8790c`, this repository at `22e8b260`, `monetarium-wallet` `2c5d237e` in place of the
+vendored copy (as step 2 will, here at wallet main rather than step 1's tag), node modules
+`v1.3.14`. The simnet runs used this repository's BTC, LTC and `dcrdex` harnesses, on Bitcoin Core
+v29.5.0 and Litecoin Core v0.21.4. The sync, restore and bond runs used a throwaway main in Skarb's
+module that imports the same packages and calls core's `InitializeClient`, `Login` and
+`CreateWallet` with the native wallet type, from a fresh seed, except the restore, which used the
+first core's.
+
+- **Build:** Skarb's app binary builds on macOS with `client/core`, `client/asset/btc` and
+  `client/asset/ltc` linked in, through two temporary `go.mod` replaces: this repository and the
+  wallet commit above. No dependency conflicted. btcwallet, ltcwallet and neutrino came in without
+  changing Gio, and of the modules Skarb already required, only the node modules and the wallet
+  moved. The combined module graph requires `lib/pq` 1.10.9; Skarb's existing replace keeps 1.10.4,
+  and the build passes with it.
+- **Sync:**
+
+  | Chain | Result | Time | Disk |
+  | --- | --- | --- | --- |
+  | BTC testnet3 | synced, up to 8 peers | 34 min | 1.3 GB |
+  | BTC mainnet | 73% of headers when stopped, 7 peers | 3 min run | 160 MB at stop |
+  | LTC mainnet | synced, 8 peers | 40 min | 728 MB |
+  | LTC testnet4 | stalled: 14 000 of 5 060 742 headers in 34 min; 2 000 in a 6 min rerun | — | — |
+
+  LTC testnet4 is the known limit above. Closing a wallet right after its sync finished was slow
+  both times it was tried: 6 min 7 s for LTC mainnet, and BTC testnet3 had not closed after 41 s
+  when the run was stopped by force. Two mainnet runs stopped mid-sync, a 12 min LTC run and the 3
+  min BTC run, closed in under a second, as did the simnet ones. The measurement after step 6 times
+  Skarb's quit.
+- **Restore, simnet:** a second core, restored from the first one's app seed into a fresh
+  database, created the BTC and LTC wallets and showed the first one's balances within 13 s:
+  2 BTC and 2.98998446 LTC. That LTC figure includes the change of an LTC bond the first core had
+  posted. Simnet blocks are minutes old, so the run shows the seed recovering the wallets'
+  deposits and change, not the birthday the plan fixes.
+- **LTC bond, simnet:** a 0.01 LTC bond was posted to the `dcrdex` harness, confirmed, expired on
+  the server and was refunded by core 92 s after its lock time, for 0.00999174 LTC. The refund
+  transaction spends the bond output and was mined on the LTC chain. Core sent it once blocks
+  mined every 15 s had moved the chain's median time past the lock time.
+- **Not checked:** Skarb's app running with core in it; Skarb's tests against the wallet
+  commit; a restore with a real birthday on testnet or mainnet; a BTC bond through the native
+  wallet; `DiscoverAccount` after a restore; builds for Windows, Linux and mobile; BTC mainnet
+  to the end of its sync.
 
 ## Step 6. Skarb stays up while a swap needs it, `skarb-wallet`
 
@@ -339,6 +393,12 @@ Item 15's guards.
   `decred.org/dcrdex/client/core`.
 
 **Done when** these tests pass on macOS, Windows and Linux.
+
+**Quit time, a measurement after step 6 is done.** Once, on macOS, with trading on and no active
+match, Skarb is quit within a minute after the later of the BTC and LTC wallets finishes its first
+mainnet sync, and the time from the quit to the process's exit is written into this file. It has
+no pass condition. Closing a wallet right after its sync was slow in step 5's measured run (6 min
+7 s for LTC); if the exit takes over a minute here, the measured time goes to the client.
 
 ## Step 7. Restore from the trading wallet's seed, `skarb-wallet`, with a `client/core` fix here
 
@@ -387,8 +447,9 @@ it off.
   bond (a record of item 14's accepted risk; it guards no code, so it is not seen failing
   first).
 
-The tests each run three times, a restore each, with a VAR, a BTC and an LTC bond, and so does
-the core fix's test.
+The tests each run three times, a restore each, with a VAR, a BTC and an LTC bond, and so does the
+core fix's test. As in step 5, core refunds a BTC or LTC bond only once its chain's median time
+passes the lock time, so the tests mine a block on that chain every 15 s until then.
 
 **Done when** the core fix's test and these tests pass in each run.
 
@@ -458,6 +519,7 @@ the core fix's test.
 [skarb:libwallet/assets/wallet/wallet_shared.go:712]: https://github.com/monetarium/skarb-wallet/blob/97cac0abbb2bfbcc118f0683dbe68685b18c6443/libwallet/assets/wallet/wallet_shared.go#L712
 [skarb:libwallet/assets/wallet/wallet_utils.go:227]: https://github.com/monetarium/skarb-wallet/blob/97cac0abbb2bfbcc118f0683dbe68685b18c6443/libwallet/assets/wallet/wallet_utils.go#L227
 [dex:client/asset/btc/btc.go:139-140]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/asset/btc/btc.go#L139-L140
+[dex:client/asset/ltc/spv.go:61-70]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/asset/ltc/spv.go#L61-L70
 [wallet:wallet/wallet.go:2400]: https://github.com/monetarium/monetarium-wallet/blob/2c5d237e7403ff46684b07327a5d2d2f83afc878/wallet/wallet.go#L2400
 [dex:client/core/bond.go:159-160]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L159-L160
 [dex:client/core/bond.go:1137]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L1137
