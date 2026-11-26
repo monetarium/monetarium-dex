@@ -757,6 +757,8 @@ func TestMain(m *testing.M) {
 	tCtx, shutdown = context.WithCancel(context.Background())
 	tTxHash, _ = chainhash.NewHashFromStr(tTxID)
 	tP2PKHScript, _ = hex.DecodeString("76a9148fc02268f208a61767504fe0b48d228641ba81e388ac")
+	_, err := asset.WalletDef(BipID, WalletTypeHost)
+	tHostTypeAtStart = err == nil // before any test hands a wallet over
 	// tP2SH, _ = hex.DecodeString("76a91412a9abf5c32392f38bd8a1f57d81b1aeecc5699588ac")
 	doIt := func() int {
 		// Not counted as coverage, must test Archiver constructor explicitly.

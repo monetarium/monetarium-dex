@@ -19,6 +19,7 @@ import (
 	"maps"
 	"math"
 	"math/rand/v2"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,7 @@ import (
 	"decred.org/dcrdex/dex/encode"
 	dexmon "decred.org/dcrdex/dex/networks/mon"
 	dcrsecp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/monetarium/monetarium-node/addrmgr"
 	"github.com/monetarium/monetarium-node/blockchain/stake"
 	"github.com/monetarium/monetarium-node/chaincfg"
 	"github.com/monetarium/monetarium-node/chaincfg/chainhash"
@@ -46,7 +48,9 @@ import (
 	"github.com/monetarium/monetarium-node/txscript/sign"
 	"github.com/monetarium/monetarium-node/txscript/stdaddr"
 	"github.com/monetarium/monetarium-node/wire"
+	"github.com/monetarium/monetarium-wallet/p2p"
 	walletjson "github.com/monetarium/monetarium-wallet/rpc/jsonrpc/types"
+	"github.com/monetarium/monetarium-wallet/spv"
 	"github.com/monetarium/monetarium-wallet/wallet"
 )
 
@@ -213,6 +217,80 @@ func tNativeWallet(t *testing.T) *tWallet {
 	return tw
 }
 
+// hostAcctPass is the host type's trading account's own passphrase, unlike the
+// wallet's.
+var hostAcctPass = []byte("trading account")
+
+// tHostWallet opens an in-process wallet as a host does: passphrase walletPass,
+// a default account with no passphrase of its own, and an account "trading",
+// number 1, with hostAcctPass, synced by the test's own syncer. It hands that
+// account over, connects the host type and funds the account from alpha with
+// five outputs of 10 VAR, and the default account with one of 100 VAR.
+func tHostWallet(t *testing.T) (*tWallet, *wallet.Wallet, uint32) {
+	t.Helper()
+	params := chaincfg.SimNetParams()
+	dir := t.TempDir()
+	db, err := wallet.CreateDB(dbDriver, filepath.Join(dir, walletDbName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := wallet.Create(tCtx, db, nil, walletPass, encode.RandomBytes(32), params); err != nil {
+		t.Fatal(err)
+	}
+	hw, err := wallet.Open(tCtx, newWalletConfig(db, params, wallet.DefaultGapLimit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hw.Unlock(tCtx, walletPass, nil); err != nil {
+		t.Fatal(err)
+	}
+	acct, err := hw.NextAccount(tCtx, "trading")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hw.SetAccountPassphrase(tCtx, acct, hostAcctPass); err != nil {
+		t.Fatal(err)
+	}
+	hw.Lock()
+
+	ctx, cancel := context.WithCancel(tCtx)
+	syncer := spv.NewSyncer(hw, p2p.NewLocalPeer(params, &net.TCPAddr{IP: net.ParseIP("::1")}, addrmgr.New(dir)))
+	syncer.SetPersistentPeers([]string{simnetSPVPeer})
+	hw.SetNetworkBackend(syncer)
+	done := make(chan struct{})
+	go func() { syncer.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done }) // after the DEX wallet's disconnect, before the db's close
+
+	SetHostWallet(hw, syncer, acct)
+	tw := connectWallet(t, "host", &asset.WalletConfig{Type: WalletTypeHost, DataDir: t.TempDir(),
+		Settings: map[string]string{}})
+	waitFor(t, "host wallet synced", 60*time.Second, func() bool {
+		ss, err := tw.w.SyncStatus()
+		return err == nil && ss.Synced
+	})
+	outs := make([]string, 6)
+	for i := range outs[:5] {
+		addr, err := tw.w.DepositAddress()
+		if err != nil {
+			t.Fatal(err)
+		}
+		outs[i] = strconv.Quote(addr) + `:"10"`
+	}
+	defaultAddr, err := hw.NewExternalAddress(tCtx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outs[5] = strconv.Quote(defaultAddr.String()) + `:"100"`
+	mustCtl(t, "alpha", "sendmany", "default", "{"+strings.Join(outs, ",")+"}")
+	mine(t, 1)
+	waitFor(t, "host wallet funded", 30*time.Second, func() bool {
+		bal, err := tw.w.Balance()
+		return err == nil && bal.Available >= 50e8
+	})
+	return tw, hw, acct
+}
+
 func connectWallet(t *testing.T, name string, cfg *asset.WalletConfig) *tWallet {
 	t.Helper()
 	cfg.Emit = asset.NewWalletEmitter(make(chan asset.WalletNotification, 128), BipID, tLogger)
@@ -234,7 +312,11 @@ func connectWallet(t *testing.T, name string, cfg *asset.WalletConfig) *tWallet 
 	if !is {
 		t.Fatalf("%s: wallet type %T", name, backend)
 	}
-	if err := w.Unlock(walletPass); err != nil {
+	pw := walletPass
+	if cfg.Type == WalletTypeHost {
+		pw = hostAcctPass
+	}
+	if err := w.Unlock(pw); err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
 	return &tWallet{name, w, nw, cm}
@@ -285,7 +367,8 @@ func medianTime(t *testing.T) int64 {
 // --rejectnonstd. The refunds wait for the median time of recent blocks to pass
 // a 1-minute lock time, as the trade tests do.
 func TestBroadcastEachKind(t *testing.T) {
-	wallets := []*tWallet{tRPCWallet(t), tNativeWallet(t)}
+	host, _, _ := tHostWallet(t)
+	wallets := []*tWallet{tRPCWallet(t), tNativeWallet(t), host}
 	var lockTime time.Time // the last wallet's, the latest
 
 	type pending struct {
@@ -516,7 +599,8 @@ func TestFeeCeilingNode(t *testing.T) {
 // of 6060 under --rejectnonstd.
 func TestDustChangeNode(t *testing.T) {
 	const contractVal, change = 1e7, 6040
-	for _, tw := range []*tWallet{tRPCWallet(t), tNativeWallet(t)} {
+	host, _, _ := tHostWallet(t)
+	for _, tw := range []*tWallet{tRPCWallet(t), tNativeWallet(t), host} {
 		w, name := tw.w, tw.name
 		self, err := w.DepositAddress()
 		if err != nil {
@@ -562,7 +646,8 @@ func TestDustChangeNode(t *testing.T) {
 // TestReservePerLot checks that bound), so this checks it holds in practice.
 func TestChainedSwapsReserve(t *testing.T) {
 	const lots = 20
-	for _, tw := range []*tWallet{tRPCWallet(t), tNativeWallet(t)} {
+	host, _, _ := tHostWallet(t)
+	for _, tw := range []*tWallet{tRPCWallet(t), tNativeWallet(t), host} {
 		w, name := tw.w, tw.name
 		self, err := w.DepositAddress()
 		if err != nil {
@@ -625,7 +710,8 @@ func TestChainedSwapsReserve(t *testing.T) {
 const ska1 = cointype.CoinType(1)
 
 // unspents lists tw's outputs of coin type ct in every account, as the wallet
-// reports them: the driver's Unspents keeps only VAR.
+// reports them: the driver's Unspents keeps only VAR. For the host type, only
+// the account it trades from.
 func unspents(t *testing.T, tw *tWallet, ct cointype.CoinType) []*walletjson.ListUnspentResult {
 	t.Helper()
 	var res []*walletjson.ListUnspentResult
@@ -635,6 +721,8 @@ func unspents(t *testing.T, tw *tWallet, ct cointype.CoinType) []*walletjson.Lis
 		err = w.rpcClientRawRequest(tCtx, methodListUnspent, anylist{0, 9999999, nil, "", uint8(ct)}, &res)
 	case *spvWallet:
 		res, err = w.dcrWallet.ListUnspent(tCtx, 0, math.MaxInt32, nil, "", &ct)
+	case *hostSPVWallet:
+		res, err = w.dcrWallet.ListUnspent(tCtx, 0, math.MaxInt32, nil, w.Accounts().PrimaryAccount, &ct)
 	default:
 		t.Fatalf("%s: wallet %T", tw.name, w)
 	}
@@ -692,15 +780,23 @@ func sendSKA1(t *testing.T, tw *tWallet, acct string, amts ...string) {
 // search: with no transaction data, a contract paid in SKA1 and mined within
 // ContractSearchLimit must fail the audit as paying no VAR. The same contract
 // paid in VAR and found the same way must pass, so the search itself works.
+// The host type searches the same way.
 func TestSPVMinedSKAContract(t *testing.T) {
-	tw := tNativeWallet(t)
+	host, _, _ := tHostWallet(t)
+	for _, tw := range []*tWallet{tNativeWallet(t), host} {
+		testMinedSKAContract(t, tw)
+	}
+}
+
+func testMinedSKAContract(t *testing.T, tw *tWallet) {
+	t.Helper()
 	w := tw.w
 	self, err := w.DepositAddress()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct{ coin, coinType string }{{"VAR", "0"}, {"SKA1", "1"}} {
-		kind := c.coin + " contract"
+		kind := tw.name + " " + c.coin + " contract"
 		secretHash := sha256.Sum256(encode.RandomBytes(32))
 		contract, err := dexmon.MakeContract(self, alphaAddress, secretHash[:], time.Now().Add(time.Hour).Unix(),
 			w.chainParams)
@@ -728,7 +824,7 @@ func TestSPVMinedSKAContract(t *testing.T) {
 		}
 		var height int64
 		waitFor(t, kind+" mined", 2*time.Minute, func() bool { mine(t, 1); height = minedAt(t, txid); return height > 0 })
-		waitFor(t, "native wallet at the contract's block", 30*time.Second, func() bool {
+		waitFor(t, tw.name+" wallet at the contract's block", 30*time.Second, func() bool {
 			_, tip, err := w.wallet.GetBestBlock(tCtx)
 			return err == nil && tip >= height
 		})
@@ -743,8 +839,8 @@ func TestSPVMinedSKAContract(t *testing.T) {
 }
 
 // TestSKAWalletFunding is item 6 on the network: the trading1 and spvwallet
-// RPC wallets hold step 1's SKA1 outputs, and the native SPV wallet is sent the
-// same five. Each amount funded, sent or withdrawn is above the wallet's largest
+// RPC wallets hold step 1's SKA1 outputs, and the native SPV wallet and the host
+// type's trading account are sent the same five. Each amount funded, sent or withdrawn is above the wallet's largest
 // VAR output, so a misread SKA1 output would be picked before any VAR one. Each
 // operation must succeed, and its transaction must be on alpha (spvwallet is the
 // external wallet's own SPV publish path). After each, no SKA1 output may be
@@ -755,7 +851,9 @@ func TestSKAWalletFunding(t *testing.T) {
 	harnessSKA1 := []string{"1000", "1000", "1000", "1000", "5"} // harness.sh's SKA1_OUTPUTS
 	native := tNativeWallet(t)
 	sendSKA1(t, native, defaultAccountName, harnessSKA1...)
-	for _, tw := range []*tWallet{tRPCWallet(t), tRPCWalletNamed(t, "spvwallet", "spvwallet"), native} {
+	host, _, _ := tHostWallet(t)
+	sendSKA1(t, host, host.w.wallet.Accounts().PrimaryAccount, harnessSKA1...)
+	for _, tw := range []*tWallet{tRPCWallet(t), tRPCWalletNamed(t, "spvwallet", "spvwallet"), native, host} {
 		w, name := tw.w, tw.name
 		ska := skaOutputs(t, tw)
 		if got := slices.Sorted(maps.Values(ska)); !slices.Equal(got, harnessSKA1) {
@@ -896,6 +994,84 @@ func TestSKAWalletFunding(t *testing.T) {
 			t.Fatalf("%s: no transfer of the mixed account's VAR", name)
 		}
 		noSKA(name+" transfer", nil, transfer)
+	}
+}
+
+// TestHostWalletAccount is item 12 for the host type's account: the default
+// account of the host's wallet holds 100 VAR, the trading account 50 in outputs
+// of 10. An order, send or withdrawal of 60 VAR must be refused, and one of 15
+// VAR, which takes two outputs, must spend and lock none of the default
+// account's. Disconnecting leaves the host's wallet open.
+func TestHostWalletAccount(t *testing.T) {
+	tw, hw, acct := tHostWallet(t)
+	w := tw.w
+	ct := cointype.CoinTypeVAR
+	defaults, err := hw.ListUnspent(tCtx, 0, math.MaxInt32, nil, defaultAccountName, &ct)
+	if err != nil || len(defaults) == 0 {
+		t.Fatalf("default account outputs %v: %v", defaults, err)
+	}
+	isDefault := func(op wire.OutPoint) bool {
+		return slices.ContainsFunc(defaults, func(u *walletjson.ListUnspentResult) bool {
+			return u.TxID == op.Hash.String() && u.Vout == op.Index
+		})
+	}
+	order := func(val uint64) *asset.Order {
+		return &asset.Order{Version: version, Value: val, MaxSwapCount: 1, MaxFeeRate: tFeeRate, FeeSuggestion: tFeeRate}
+	}
+
+	// Refused for want of funds, not at signing: the default account is locked.
+	short := func(kind string, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), "insufficient") && !strings.Contains(err.Error(), "not enough") {
+			t.Errorf("%s of 60 VAR: %v, want a shortage of funds", kind, err)
+		}
+	}
+	_, _, _, err = w.FundOrder(order(60e8))
+	short("order", err)
+	_, err = w.Send(alphaAddress, 60e8, tFeeRate)
+	short("send", err)
+	_, err = w.Withdraw(alphaAddress, 60e8, tFeeRate)
+	short("withdrawal", err)
+
+	coins, _, _, err := w.FundOrder(order(15e8))
+	if err != nil {
+		t.Fatalf("fund: %v", err)
+	}
+	t.Cleanup(func() { w.ReturnCoins(coins) })
+	locked, err := w.wallet.LockedOutputs(tCtx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range locked {
+		h, err := chainhash.NewHashFromStr(l.Txid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if isDefault(wire.OutPoint{Hash: *h, Index: l.Vout}) {
+			t.Errorf("fund locked the default account's %s:%d", l.Txid, l.Vout)
+		}
+	}
+	if err := w.ReturnCoins(coins); err != nil {
+		t.Fatal(err)
+	}
+	for kind, send := range map[string]func() (asset.Coin, error){
+		"send":     func() (asset.Coin, error) { return w.Send(alphaAddress, 15e8, tFeeRate) },
+		"withdraw": func() (asset.Coin, error) { return w.Withdraw(alphaAddress, 15e8, tFeeRate) },
+	} {
+		coin, err := send()
+		if err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+		for _, in := range accepted(t, kind, coinTxid(t, kind, coin.ID())).TxIn {
+			if isDefault(in.PreviousOutPoint) {
+				t.Errorf("%s spent the default account's %s", kind, in.PreviousOutPoint)
+			}
+		}
+	}
+
+	tw.cm.Disconnect()
+	if _, err := hw.AccountBalance(tCtx, acct, 0); err != nil {
+		t.Errorf("host wallet after the DEX disconnected: %v", err)
 	}
 }
 

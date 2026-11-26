@@ -497,20 +497,24 @@ func (w *spvWallet) Connect(ctx context.Context) error {
 	go func() {
 		defer w.wg.Done()
 		defer w.stop()
-
-		ticker := time.NewTicker(time.Minute * 20)
-
-		for {
-			select {
-			case <-ticker.C:
-				w.cleanBlockCache()
-			case <-ctx.Done():
-				return
-			}
-		}
+		w.blockCacheLoop(ctx)
 	}()
 
 	return nil
+}
+
+// blockCacheLoop discards old cached blocks until ctx is done.
+func (w *spvWallet) blockCacheLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute * 20)
+
+	for {
+		select {
+		case <-ticker.C:
+			w.cleanBlockCache()
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // Disconnect shuts down the wallet and waits for monitored threads to exit.
@@ -1396,9 +1400,27 @@ func (w *spvWallet) SetVotingPreferences(ctx context.Context, choices, tspendPol
 }
 
 func (w *spvWallet) ListSinceBlock(ctx context.Context, start int32) ([]ListTransactionsResult, error) {
+	return w.listSinceBlock(ctx, start, nil)
+}
+
+// listSinceBlock lists the wallet's transactions since start: every one, or
+// with acct, those that spend from or pay to that account, Send meaning one
+// that spends from it.
+func (w *spvWallet) listSinceBlock(ctx context.Context, start int32, acct *uint32) ([]ListTransactionsResult, error) {
 	res := make([]ListTransactionsResult, 0)
 	f := func(block *wallet.Block) (bool, error) {
 		for _, tx := range block.Transactions {
+			send := len(tx.MyInputs) > 0
+			if acct != nil {
+				send = slices.ContainsFunc(tx.MyInputs, func(in wallet.TransactionSummaryInput) bool {
+					return in.PreviousAccount == *acct
+				})
+				if !send && !slices.ContainsFunc(tx.MyOutputs, func(out wallet.TransactionSummaryOutput) bool {
+					return out.Account == *acct
+				}) {
+					continue
+				}
+			}
 			convertTxType := func(txType wallet.TransactionType) *walletjson.ListTransactionsTxType {
 				switch txType {
 				case wallet.TransactionTypeTicketPurchase:
@@ -1429,7 +1451,7 @@ func (w *spvWallet) ListSinceBlock(ctx context.Context, start int32) ([]ListTran
 				TxID:       tx.Hash.String(),
 				BlockIndex: &blockIndex,
 				BlockTime:  blockTime,
-				Send:       len(tx.MyInputs) > 0,
+				Send:       send,
 				TxType:     convertTxType(tx.Type),
 				Fee:        &fee,
 			})

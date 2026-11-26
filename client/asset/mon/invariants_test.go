@@ -295,10 +295,14 @@ func TestFundingIgnoresSKA(t *testing.T) {
 	testFundingAvoids(t, tRPCSeam, fixtures, ska)
 }
 
-// TestSPVFundingIgnoresSKA is TestFundingIgnoresSKA over the native SPV wallet.
+// TestSPVFundingIgnoresSKA is TestFundingIgnoresSKA over the native SPV wallet,
+// and over the host type without the fixture with SKA in a second account: the
+// host type funds from one account.
 func TestSPVFundingIgnoresSKA(t *testing.T) {
 	fixtures, ska := skaFundingFixtures()
 	testFundingAvoids(t, tSPVSeam, fixtures, ska)
+	delete(fixtures, "SKA in the trading account")
+	t.Run("host", func(t *testing.T) { testFundingAvoids(t, tHostSeam, fixtures, ska) })
 }
 
 // TestTransferAccountIgnoresSKA is item 6 for the native wallet's account
@@ -408,9 +412,11 @@ func TestStakerFeeNotSelected(t *testing.T) {
 }
 
 // TestSPVStakerFeeNotSelected is TestStakerFeeNotSelected over the native SPV
-// wallet, whose account transfer must not sweep a staker-fee output either.
+// wallet, whose account transfer must not sweep a staker-fee output either, and
+// over the host type.
 func TestSPVStakerFeeNotSelected(t *testing.T) {
 	testStakerFeeNotSelected(t, tSPVSeam)
+	t.Run("host", func(t *testing.T) { testStakerFeeNotSelected(t, tHostSeam) })
 
 	nw, dcrw, shutdown := tNewNativeWallet()
 	defer shutdown()
@@ -440,7 +446,8 @@ func TestSPVStakerFeeNotSelected(t *testing.T) {
 // wallet lists as not spendable; a vote's reward and a revocation's output
 // fund orders and stay in.
 func TestStakerFeeNotAvailable(t *testing.T) {
-	for name, newSeam := range map[string]func([]walletjson.ListUnspentResult) *tSeam{"rpc": tRPCSeam, "spv": tSPVSeam} {
+	for name, newSeam := range map[string]func([]walletjson.ListUnspentResult) *tSeam{"rpc": tRPCSeam, "spv": tSPVSeam,
+		"host": tHostSeam} {
 		ska, unspendable := tStakerFeeUnspent(t, 22, "1", 1000), tStakerFeeUnspent(t, 23, "2", 1000)
 		ska.CoinType, unspendable.Spendable = 1, false
 		vote, revocation := tStakerFeeUnspent(t, 1, "3", 1000), tStakerFeeUnspent(t, 2, "1", 1000)
@@ -549,14 +556,19 @@ func testStakerFeeNotSelected(t *testing.T, newSeam func([]walletjson.ListUnspen
 		unspents = append(unspents, *tStakerFeeUnspent(t, vout, o.amt, o.confs))
 		avoid[newOutPoint(tTxHash, vout)] = true
 	}
-	trading := slices.Clone(unspents)
-	for i := range trading {
-		if trading[i].TxType == int(stake.TxTypeSSFee) {
-			trading[i].Account = tTradingAcct // the trading account is read on its own
+	fixtures := map[string][]walletjson.ListUnspentResult{"staker fee": unspents}
+	probe := newSeam(nil)
+	probe.shutdown()
+	if probe.w.wallet.Accounts().TradingAccount != "" { // the host type funds from one account
+		trading := slices.Clone(unspents)
+		for i := range trading {
+			if trading[i].TxType == int(stake.TxTypeSSFee) {
+				trading[i].Account = tTradingAcct // the trading account is read on its own
+			}
 		}
+		fixtures["staker fee in the trading account"] = trading
 	}
-	testFundingAvoids(t, newSeam, map[string][]walletjson.ListUnspentResult{"staker fee": unspents,
-		"staker fee in the trading account": trading}, avoid)
+	testFundingAvoids(t, newSeam, fixtures, avoid)
 
 	// Only the staker-fee type goes: the owner's vote and revocation outputs still fund an order
 	// that the 1 VAR regular output cannot.

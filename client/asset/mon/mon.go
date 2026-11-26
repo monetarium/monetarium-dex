@@ -774,6 +774,11 @@ func NewWallet(cfg *asset.WalletConfig, logger dex.Logger, network dex.Network) 
 		if err != nil {
 			return nil, err
 		}
+	case WalletTypeHost:
+		dcr.wallet, err = openHostWallet(chainParams, logger)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		makeCustomWallet, ok := customWalletConstructors[cfg.Type]
 		if !ok {
@@ -4191,9 +4196,9 @@ func (dcr *ExchangeWallet) AddressUsed(addrStr string) (bool, error) {
 func (dcr *ExchangeWallet) Unlock(pw []byte) error {
 	// Older SPV wallet potentially need an upgrade while we have a password.
 	acctsToUnlock := dcr.allAccounts()
-	if upgrader, is := dcr.wallet.(interface {
-		upgradeAccounts(ctx context.Context, pw []byte) error
-	}); is {
+	// The native wallet only: a host's wallet embeds spvWallet, and its
+	// passphrase and accounts are the host's.
+	if upgrader, is := dcr.wallet.(*spvWallet); is {
 		if err := upgrader.upgradeAccounts(dcr.ctx, pw); err != nil {
 			return fmt.Errorf("error upgrading accounts: %w", err)
 		}
@@ -4212,7 +4217,9 @@ func (dcr *ExchangeWallet) Unlock(pw []byte) error {
 		if err != nil {
 			return err
 		}
-		if unlocked {
+		// The host type's wallet checks the passphrase of an unlocked account
+		// too, and core's SetWalletPassword checks a new one by Unlock.
+		if unlocked && dcr.walletType != WalletTypeHost {
 			continue // attempt to unlock the other account
 		}
 
