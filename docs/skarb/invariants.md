@@ -16,7 +16,8 @@ test runs is the job of the Skarb-stage plan, [`plan.md`](plan.md).
 
 ## The shape these invariants assume
 
-Decided on 2026-11-23. SKA trading is a separate, later stage.
+Decided on 2026-11-23; the client accepted the BTC and LTC wallets, the trading account and the
+accepted risks below on 2026-11-26. SKA trading is a separate, later stage.
 
 - **Platforms:** desktop only (macOS, Windows, Linux). Skarb ships no mobile build yet (SKARB
   [`README.md:7-12`][skarb:README.md:7-12]); mobile trading is a later stage, after a Skarb
@@ -25,9 +26,11 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
   (DEX [`client/core/core.go:2904-2925`][dex:client/core/core.go:2904-2925]).
 - **One backup:** Skarb derives the DEX app seed from the seed of the VAR trading wallet,
   domain-separated, and passes it to `InitializeClient` as the restoration seed (DEX
-  [`client/core/core.go:4442`][dex:client/core/core.go:4442]).
+  [`client/core/core.go:4442`][dex:client/core/core.go:4442]). Skarb never shows or exports the DEX
+  app seed.
 - **VAR trading wallet:** one Skarb wallet, fixed for the life of the DEX data, trading from a
-  dedicated account that Skarb creates. The trading account buys no tickets: Skarb's ticket
+  dedicated account that Skarb creates and the user funds by an ordinary transaction from within
+  that wallet, so its staking is untouched. The trading account buys no tickets: Skarb's ticket
   purchase excludes it. Changing the trading wallet is a reset of the DEX data.
 - **VAR seam:** `client/asset/mon` wraps Skarb's in-process `monetarium-wallet` wallet, so the
   Monetarium rules of the driver's SPV wallet apply unchanged. Skarb does not re-implement them.
@@ -40,20 +43,19 @@ Decided on 2026-11-23. SKA trading is a separate, later stage.
 - **Lock times:** DCRDEX's defaults, 8 hours for the taker and 20 hours for the maker (DEX
   [`dex/asset.go:17-18`][dex:dex/asset.go:17-18]). They are global and fixed on mainnet, so VAR
   cannot have its own.
-- **Accepted risks:** a lost DEX database is not recoverable from the seed for swaps in flight
-  or for a bond in its last ~30 days, whose coins are lost, and there is no database export
-  (item 14), and a bond stays locked while the server is gone with an order booked (item 14),
-  and a bond broadcast but not yet stored by the server is lost on a restore from the seed (item
-  14, awaiting the client's agreement); a swap fails, and a taker's coins can be lost, when
-  Skarb cannot run a redeem before its deadline because the lid is closed, the computer is shut
-  down, restarted (an operating-system update included) or loses power, Skarb is forced to quit
-  or crashes, or the network is lost (item 15). A maker redeeming a BTC or LTC contract just
-  before the taker's lock time can lose its coins by the same causes; the plan narrows that case
-  with a margin, and accepts what remains: a redeem sent before the margin and still unconfirmed
-  when the taker can refund. Idle sleep after the computer refuses Skarb's sleep inhibitor is
-  accepted too (item 15). Two installs restored from one seed and run at once share one DEX
-  account and the same coins (item 13); Skarb's user-facing text says to trade from one install
-  at a time.
+- **Accepted risks:** a lost DEX database is not recoverable from the seed for swaps in flight or
+  for a bond in its last ~30 days, whose coins are lost, and there is no database export (item 14),
+  and a bond stays locked while the server is gone with an order booked (item 14), and a bond
+  broadcast but not yet stored by the server is lost on a restore from the seed (item 14); a swap
+  fails, and a taker's coins can be lost, when Skarb cannot run a redeem before its deadline because
+  the lid is closed, the computer is shut down, restarted (an operating-system update included) or
+  loses power, Skarb is forced to quit or crashes, or the network is lost (item 15). A maker
+  redeeming a BTC or LTC contract just before the taker's lock time can lose its coins by the same
+  causes; the plan narrows that case with a margin, and accepts what remains: a redeem sent before
+  the margin and still unconfirmed when the taker can refund. Idle sleep after the computer refuses
+  Skarb's sleep inhibitor is accepted too (item 15). Two installs restored from one seed and run at
+  once share one DEX account and the same coins (item 13); Skarb's user-facing text says to trade
+  from one install at a time.
 
 Versions read, each citation linking to the file at that commit:
 
@@ -187,14 +189,14 @@ Moved here from the PoC file; the number is kept.
 
   So deleting the trading wallet, resetting the DEX data or switching the trading wallet in-app
   can strand funds that a seed restore does not bring back.
-- **Accepted risk:** losing the DEX database outside the app (a lost device, a wiped app
-  directory) while a swap is in flight or a bond is in its last ~30 days. There is no database
-  export. Skarb states this limit in its user-facing text, and a deletion, reset or switch with
-  no active match, no unrefunded bond and no BTC or LTC balance at or above that chain's dust
-  limit goes ahead only after a warning. Also accepted: if the server goes away while an order
-  is booked, the account cannot be disabled and the order cannot be canceled, so the bond stays
-  locked until the server returns. Also accepted, awaiting the client's agreement: a bond
-  broadcast but not yet stored by the server is lost on a restore from the seed.
+- **Accepted risk:** losing the DEX database outside the app (a lost device, a wiped app directory)
+  while a swap is in flight or a bond is in its last ~30 days. There is no database export. Skarb
+  states this limit in its user-facing text, and a deletion, reset or switch with no active match,
+  no unrefunded bond and no BTC or LTC balance at or above that chain's dust limit goes ahead only
+  after a warning. Also accepted: if the server goes away while an order is booked, the account
+  cannot be disabled and the order cannot be canceled, so the bond stays locked until the server
+  returns. Also accepted: a bond broadcast but not yet stored by the server is lost on a restore
+  from the seed.
 - **Exposed by:**
   - a fixed test vector: a given trading-wallet seed gives a given DEX app seed in every
     version;

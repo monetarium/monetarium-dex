@@ -6,9 +6,9 @@ LTC through DCRDEX's native SPV wallets, one backup, a dedicated VAR trading acc
 at start, lock times of 8 and 20 hours) holds here unchanged. SKA trading and mobile trading
 are later stages.
 
-Not covered here: Skarb's trading screens (markets, the order form, the BTC and LTC wallet
-pages, the choice of bond coin), which get a plan of their own. The steps below build what
-items 11-15 need underneath them.
+Not covered here: Skarb's trading screens (markets, the order form, the BTC and LTC wallet pages,
+the choice of bond coin, a "Trading" badge on the trading wallet), which get a plan of their own.
+The steps below build what items 11-15 need underneath them.
 
 Each step below ends when its named tests pass. As in the PoC plan
 ([`../var-port/plan.md`](../var-port/plan.md)), each test for an item is written before the code
@@ -165,19 +165,19 @@ core from this repository: its `go.mod` replaces `decred.org/dcrdex` with this r
 pinned commit past steps 3 and 4. It hands its trading wallet to step 3's type through that
 step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
 
-- **Turning trading on.** The user picks one Skarb wallet. Skarb creates a dedicated trading
-  account in it, gives that account its own passphrase, equal to the wallet's spending
-  passphrase (WAL [`wallet/wallet.go:2400`][wallet:wallet/wallet.go:2400]), and requires a
-  startup passphrase. A whole-wallet unlock does not unlock an account with its own passphrase
-  ([`wallet/udb/addressmanager.go:1566-1574`][wallet:wallet/udb/addressmanager.go:1566-1574]),
-  so for its own sends from the trading account Skarb also unlocks that account. Skarb's lock
-  after a send locks every account, the trading account included, and core unlocks it again
-  before each swap, redeem and refund
+- **Turning trading on.** The user picks one Skarb wallet. Skarb creates a dedicated trading account
+  in it, gives that account its own passphrase, equal to the wallet's spending passphrase (WAL
+  [`wallet/wallet.go:2400`][wallet:wallet/wallet.go:2400]), and requires a startup passphrase. A
+  whole-wallet unlock does not unlock an account with its own passphrase
+  ([`wallet/udb/addressmanager.go:1566-1574`][wallet:wallet/udb/addressmanager.go:1566-1574]), so
+  for its own sends from the trading account Skarb also unlocks that account. The user funds the
+  trading account by an ordinary transaction from within that wallet, so its staking is untouched.
+  Skarb's lock after a send locks every account, the trading account included, and core unlocks it
+  again before each swap, redeem and refund
   ([`client/core/wallet.go:151`][dex:client/core/wallet.go:151]). Turning trading on is refused
-  while core is initialized; otherwise Skarb calls `InitializeClient` with the seed derived
-  below (DEX [`client/core/core.go:4442`][dex:client/core/core.go:4442]). The call is the same
-  for a new wallet and a restored one, so a restore into a fresh profile starts DEX init the
-  same way.
+  while core is initialized; otherwise Skarb calls `InitializeClient` with the seed derived below
+  (DEX [`client/core/core.go:4442`][dex:client/core/core.go:4442]). The call is the same for a new
+  wallet and a restored one, so a restore into a fresh profile starts DEX init the same way.
 - **The DEX app seed.** A 15-word DEX mnemonic (DEX
   [`client/mnemonic/seed.go:94`][dex:client/mnemonic/seed.go:94]):
   - its 18 bytes of entropy are the first 18 bytes of HMAC-SHA256, keyed with the ASCII string
@@ -469,16 +469,18 @@ passes the lock time, so the tests mine a block on that chain every 15 s until t
   step 5, by the lock from the send's build and the check of picked coins at that build.
 - **PoC items through Skarb's seam:** step 3. Only step 3's named tests are repeated.
 
-## What is needed from the client
+## Lot and bond, agreed with the client on 2026-11-26
 
-- The bond amounts on the Monetarium DEX server, recommended and awaiting the client's
-  agreement: the user bonds in VAR, BTC or LTC; 10 VAR, 1/400 of a 4,000 VAR lot; 0.0003 BTC;
-  0.025 LTC. Each stays at or above its chain's minimum bond, the asset driver's `MinBondSize`
-  at that asset's `maxFeeRate` in the server's markets config. At a BTC rate of 50 sat/vB, as on
-  dex.decred.org, and the sample config's LTC rate of 20, that is 0.0002235 BTC and 0.0000894
-  LTC. The 0.0003 BTC assumes the server's BTC `maxFeeRate` of 50; a higher rate raises the
-  minimum (0.000447 BTC at 100).
-- Agreement to item 14's accepted risk for a bond broadcast but not yet stored by the server.
+- **Lot:** 200 VAR. At 100 VAR, the server's minimum VAR/BTC rate at a BTC `maxFeeRate` of 50 would
+  be 236 sat per VAR, about $0.14 at BTC $60,000, which refuses orders at $0.10 per VAR; at 200 VAR
+  it is 118 sat (about $0.07).
+- **Bond:** the user picks the coin; the server's markets config sets 10 VAR, 0.0003 BTC or 0.025
+  LTC. The 10 VAR is fixed, not tied to the lot: about $1 at $0.10 per VAR (dex.decred.org's bond is
+  0.1 DCR). Each stays at or above its chain's minimum bond, the asset driver's `MinBondSize` at
+  that asset's `maxFeeRate` in the server's markets config. At a BTC rate of 50 sat/vB, as on
+  dex.decred.org, and the sample config's LTC rate of 20, that is 0.0002235 BTC and 0.0000894 LTC.
+  The 0.0003 BTC assumes the server's BTC `maxFeeRate` of 50; a higher rate raises the minimum
+  (0.000447 BTC at 100).
 
 ## Order and dependencies
 
