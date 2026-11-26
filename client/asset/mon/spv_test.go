@@ -78,6 +78,7 @@ type tDcrWallet struct {
 	acctUnlockedErr  error
 	lockAcctErr      error
 	unlockAcctErr    error
+	unlockAcctCalls  int
 	priv             *secp256k1.PrivateKey
 	privKeyErr       error
 	txDetails        *udb.TxDetails
@@ -91,6 +92,7 @@ type tDcrWallet struct {
 	sentTxs          []*wire.MsgTx    // every tx published
 	stakeInfo        wallet.StakeInfoData
 	rescanUpdates    []wallet.RescanProgress
+	blocks           []*wallet.Block // GetTransactions'
 }
 
 func (w *tDcrWallet) KnownAddress(ctx context.Context, a stdaddr.Address) (wallet.KnownAddress, error) {
@@ -243,6 +245,7 @@ func (w *tDcrWallet) LockAccount(ctx context.Context, account uint32) error {
 }
 
 func (w *tDcrWallet) UnlockAccount(ctx context.Context, account uint32, passphrase []byte) error {
+	w.unlockAcctCalls++
 	return w.unlockAcctErr
 }
 
@@ -443,6 +446,11 @@ func (w *tDcrWallet) NewVSPTicket(ctx context.Context, hash *chainhash.Hash) (*w
 }
 
 func (w *tDcrWallet) GetTransactions(ctx context.Context, f func(*wallet.Block) (bool, error), startBlock, endBlock *wallet.BlockIdentifier) error {
+	for _, b := range w.blocks {
+		if done, err := f(b); done || err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -772,11 +780,21 @@ func TestUnspentOutput(t *testing.T) {
 // TestSwapConfirmationsSPVCredit drives UnspentOutput's confirmation count
 // through SwapConfirmations, its only reader. The swap output is a wallet credit
 // here, which a P2SH contract output is not today, so live swaps take the
-// GetTransaction path instead; the count must agree with it either way.
+// GetTransaction path instead; the count must agree with it either way. The host
+// type counts the same way.
 func TestSwapConfirmationsSPVCredit(t *testing.T) {
 	nw, dcrw, shutdown := tNewNativeWallet()
 	defer shutdown()
+	testSwapConfirmationsCredit(t, nw.ExchangeWallet, dcrw)
+	t.Run("host", func(t *testing.T) {
+		hw, hdcrw, hshutdown := tNewHostWallet()
+		defer hshutdown()
+		testSwapConfirmationsCredit(t, hw, hdcrw)
+	})
+}
 
+func testSwapConfirmationsCredit(t *testing.T, nw *ExchangeWallet, dcrw *tDcrWallet) {
+	t.Helper()
 	const vout = 1
 	dcrw.txDetails = &udb.TxDetails{
 		TxRecord: udb.TxRecord{MsgTx: wire.MsgTx{TxOut: []*wire.TxOut{{}, {}}}},
