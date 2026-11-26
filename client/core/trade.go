@@ -1131,11 +1131,12 @@ func (t *trackedTrade) processCancelMatch(msgMatch *msgjson.Match) error {
 
 // Get the required and current confirmation count on the counterparty's swap
 // contract transaction for the provided match. If the count has not changed
-// since the previous check, changed will be false.
+// since the previous check, changed will be false. The contract counts as
+// expired once its lock time is less than margin ahead of the local clock.
 //
 // This method accesses match fields and MUST be called with the trackedTrade
 // mutex lock held for reads.
-func (t *trackedTrade) counterPartyConfirms(ctx context.Context, match *matchTracker) (have, needed uint32, changed, spent, expired bool, err error) {
+func (t *trackedTrade) counterPartyConfirms(ctx context.Context, match *matchTracker, margin time.Duration) (have, needed uint32, changed, spent, expired bool, err error) {
 	fail := func(err error) (uint32, uint32, bool, bool, bool, error) {
 		return 0, 0, false, false, false, err
 	}
@@ -1161,7 +1162,7 @@ func (t *trackedTrade) counterPartyConfirms(ctx context.Context, match *matchTra
 		return fail(fmt.Errorf("error checking if locktime has expired on taker's contract on order %s, "+
 			"match %s: %w", t.ID(), match, err))
 	}
-	expired = time.Until(lockTime) < 0 // not necessarily refundable, but can be at any moment
+	expired = time.Until(lockTime) < margin // not necessarily refundable, but can be at any moment
 
 	have, spent, err = wallet.swapConfirmations(ctx, coin.ID(),
 		match.MetaData.Proof.CounterContract, match.MetaData.Stamp)
@@ -1394,7 +1395,7 @@ func (t *trackedTrade) isSwappable(ctx context.Context, match *matchTracker) (re
 		if match.Side == order.Taker {
 			// If the maker is the counterparty, we can determine swappability
 			// based on the confirmations.
-			confs, req, changed, spent, expired, err := t.counterPartyConfirms(ctx, match)
+			confs, req, changed, spent, expired, err := t.counterPartyConfirms(ctx, match, 0)
 			if err != nil {
 				if !errors.Is(err, asset.ErrSwapNotInitiated) {
 					// We cannot get the swap data yet but there is no need
@@ -1581,7 +1582,8 @@ func (t *trackedTrade) updateDynamicSwapOrRedemptionFeesPaid(ctx context.Context
 // In certain situations, the match should be revoked and the return will
 // indicate this. In particular, the situations are when the match is in
 // TakerSwapCast on the Maker side and the taker's swap is found to be either
-// spent or expired. Such matches are also not redeemable.
+// spent or expired, or its lock time is less than 1/8 of the taker's lock time
+// ahead. Such matches are also not redeemable.
 //
 // This method accesses match fields and MUST be called with the trackedTrade
 // mutex lock held for reads.
@@ -1622,8 +1624,10 @@ func (t *trackedTrade) isRedeemable(ctx context.Context, match *matchTracker) (r
 	switch match.Status {
 	case order.TakerSwapCast:
 		if match.Side == order.Maker {
-			// Check the confirmations on the taker's swap.
-			confs, req, changed, spent, expired, err := t.counterPartyConfirms(ctx, match)
+			// Check the confirmations on the taker's swap. A redeem sent
+			// close to the taker's lock time reveals the secret, and the
+			// taker's refund could replace it before it confirms.
+			confs, req, changed, spent, expired, err := t.counterPartyConfirms(ctx, match, t.lockTimeTaker/8)
 			if err != nil {
 				if !errors.Is(err, asset.ErrSwapNotInitiated) {
 					// We cannot get the swap data yet but there is no need
@@ -1645,7 +1649,8 @@ func (t *trackedTrade) isRedeemable(ctx context.Context, match *matchTracker) (r
 				if match.MetaData.Proof.SelfRevoked {
 					return false, false // already self-revoked
 				}
-				t.dc.log.Warnf("Order %s, match %s counter-party's swap expired before we could redeem", t.ID(), match)
+				t.dc.log.Warnf("Order %s, match %s counter-party's swap expired, or is within %v of its lock time, before we could redeem",
+					t.ID(), match, t.lockTimeTaker/8)
 				return false, true // REVOKE!
 			}
 			// NOTE: We'll redeem even if the market has vanished - taker will
