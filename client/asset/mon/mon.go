@@ -1539,6 +1539,9 @@ func (dcr *ExchangeWallet) estimateSwap(lots, lotSize, feeSuggestion, maxFeeRate
 
 	avail := sumUTXOs(utxos)
 	reserves := dcr.bondReserves.Load()
+	if reserves > avail { // as in fundInternalWithUTXOs; avail-reserves below would wrap
+		return nil, false, 0, asset.ErrInsufficientBalance
+	}
 
 	digestInputs := func(inputsSize uint32) (reqFunds, maxFees, estHighFees, estLowFees uint64) {
 		// NOTE: reqFunds = val + fees, so change (extra) will be sum-reqFunds
@@ -2095,6 +2098,9 @@ func (dcr *ExchangeWallet) fundMultiBestEffort(keep, maxLock uint64, values []*a
 	var avail uint64
 	for _, utxo := range utxos {
 		avail += utxo.value
+	}
+	if keep > avail { // avail-keep below would wrap and let orders spend the reserves
+		return nil, nil, nil, asset.ErrInsufficientBalance
 	}
 
 	fundAllOrders := func() [][]*compositeUTXO {
