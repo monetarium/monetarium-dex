@@ -135,14 +135,21 @@ secret, and on Bitcoin or Litecoin the taker's refund can replace it while it is
 
 The change, in the maker branch of `isRedeemable`
 ([`:1626-1650`][dex:client/core/trade.go:1626-1650]): the maker treats the taker's contract as
-expired once its lock time is less than 1/8 of the taker's lock time ahead of the local clock
-(1 hour at the 8-hour default).
-`counterPartyConfirms`, which computes the expiry, also serves the taker's swap check, which
-keeps the check it has. The match is then revoked as for an expired contract, and both
-sides refund after their own lock times: on a match it has not yet tried to redeem, the maker
-loses time, not coins. The taker's redeem is
-unchanged ([`:1683-1684`][dex:client/core/trade.go:1683-1684]): by then the maker holds the
-taker's coins, so the taker must redeem whatever the time.
+expired once its lock time is less than 1/8 of the taker's lock time ahead of the local clock (1
+hour at the 8-hour default). `counterPartyConfirms`, which computes the expiry, also serves the
+taker's swap check, which keeps the check it has. Core then self-revokes the match as for an expired
+contract, and both sides refund after their own lock times: on a match it has not yet tried to
+redeem, the maker loses time and its swap and refund fees, not the traded coins, and may take a
+strike. The server does not know the margin: when the maker has not redeemed before the margin
+starts, the server fails the match once the taker's swap has been confirmed for the broadcast
+timeout and, unless either contract's lock time has passed when it fails the match, books
+`NoRedeemAsMaker` against the maker (DEX
+[`server/swap/swap.go:1223-1237`][dex:server/swap/swap.go:1223-1237],
+[`:1046-1049`][dex:server/swap/swap.go:1046-1049]). So the strike lands whenever the taker's swap
+confirms between the margin's start and one broadcast timeout before the taker's lock time, a timing
+the taker can bring about at no cost to its own score: the taker gets no strike. The taker's redeem
+is unchanged ([`trade.go:1683-1684`][dex:client/core/trade.go:1683-1684]): by then the maker holds
+the taker's coins, so the taker must redeem whatever the time.
 
 This edits an upstream-owned file; the change applies to every asset, not to VAR alone.
 
@@ -518,6 +525,8 @@ passes the lock time, so the tests mine a block on that chain every 15 s until t
 [skarb:ui/window.go:266-269]: https://github.com/monetarium/skarb-wallet/blob/97cac0abbb2bfbcc118f0683dbe68685b18c6443/ui/window.go#L266-L269
 [dex:client/core/trade.go:1159-1164]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/trade.go#L1159-L1164
 [dex:client/core/trade.go:1626-1650]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/trade.go#L1626-L1650
+[dex:server/swap/swap.go:1223-1237]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/server/swap/swap.go#L1223-L1237
+[dex:server/swap/swap.go:1046-1049]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/server/swap/swap.go#L1046-L1049
 [skarb:libwallet/assets/wallet/wallet_shared.go:712]: https://github.com/monetarium/skarb-wallet/blob/97cac0abbb2bfbcc118f0683dbe68685b18c6443/libwallet/assets/wallet/wallet_shared.go#L712
 [skarb:libwallet/assets/wallet/wallet_utils.go:227]: https://github.com/monetarium/skarb-wallet/blob/97cac0abbb2bfbcc118f0683dbe68685b18c6443/libwallet/assets/wallet/wallet_utils.go#L227
 [dex:client/asset/btc/btc.go:139-140]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/asset/btc/btc.go#L139-L140
