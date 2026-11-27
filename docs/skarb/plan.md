@@ -166,12 +166,12 @@ This edits an upstream-owned file; the change applies to every asset, not to VAR
 **Done when** this test passes and the existing `client/core` tests still do, with their mock's
 default contract lock time moved past the margin.
 
-## Step 5. Trading in Skarb, `skarb-wallet`
+## Step 5. Trading in Skarb, `skarb-wallet`, with a `client/core` fix here
 
-Items 11 (the order case), 13, 14 and 15, the parts that live in Skarb's code. Skarb embeds DEX
-core from this repository: its `go.mod` replaces `decred.org/dcrdex` with this repository at a
-pinned commit past steps 3 and 4. It hands its trading wallet to step 3's type through that
-step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
+Items 11 (the order case), 13, 14 and 15, the parts that live in Skarb's code. Skarb embeds DEX core
+from this repository: its `go.mod` replaces `decred.org/dcrdex` with this repository at a pinned
+commit past steps 3 and 4 and this step's core fix. It hands its trading wallet to step 3's type
+through that step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
 
 - **Turning trading on.** The user picks one Skarb wallet. Skarb creates a dedicated trading account
   in it, gives that account its own passphrase, equal to the wallet's spending passphrase (WAL
@@ -183,9 +183,11 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   Skarb's lock after a send locks every account, the trading account included, and core unlocks it
   again before each swap, redeem and refund
   ([`client/core/wallet.go:151`][dex:client/core/wallet.go:151]). Turning trading on is refused
-  while core is initialized; otherwise Skarb calls `InitializeClient` with the seed derived below
-  (DEX [`client/core/core.go:4442`][dex:client/core/core.go:4442]). The call is the same for a new
-  wallet and a restored one, so a restore into a fresh profile starts DEX init the same way.
+  while core is initialized, and the refusal offers resetting the trading data, which logs in first
+  and then runs the reset's own checks below, as its way out; otherwise Skarb calls
+  `InitializeClient` with the seed derived below (DEX
+  [`client/core/core.go:4442`][dex:client/core/core.go:4442]). The call is the same for a new wallet
+  and a restored one, so a restore into a fresh profile starts DEX init the same way.
 - **The DEX app seed.** A 15-word DEX mnemonic (DEX
   [`client/mnemonic/seed.go:94`][dex:client/mnemonic/seed.go:94]):
   - its 18 bytes of entropy are the first 18 bytes of HMAC-SHA256, keyed with the ASCII string
@@ -227,6 +229,20 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   account until it is published or fails, Skarb locks its inputs, so a DEX funding call in
   between cannot select them. At that build Skarb also checks the coins the user picked, and
   refuses the send if any is locked.
+- **A send's amount.** While trading is on, a send from the trading account is refused unless core's
+  available VAR covers its amount and fee together (`AssetBalance`, DEX
+  [`client/core/core.go:7173`][dex:client/core/core.go:7173]), which leaves out what the VAR driver
+  holds back for the next bond
+  ([`client/asset/mon/mon.go:1245-1261`][dex:client/asset/mon/mon.go:1245-1261]). A larger send is
+  refused, naming the available amount: spent, those funds would leave the next renewal unposted,
+  with only a log line ([`client/core/bond.go:695`][dex:client/core/bond.go:695]), and the account
+  at tier 0 once its bond expires. Core sets that reserve only once it holds the server's bond
+  config ([`client/core/bond.go:193-197`][dex:client/core/bond.go:193-197]), and on its next bond
+  pass (every 20 s), so with renewal on, until core's VAR balance reports a bond reserve
+  (`BondReserves`), a send from the trading account is refused, naming that. Core's reserve pass
+  also stops, where it means to skip, at the first wallet that can bond but is no bond asset
+  ([`:226-229`][dex:client/core/bond.go:226-229]), so VAR's reserve can go unset; the fix here makes
+  it skip that wallet.
 - **No tickets from the trading account.** Skarb's ticket purchase and its ticket buyer refuse
   the trading account (SKARB
   [`libwallet/assets/dcr/ticket.go:161`][skarb:libwallet/assets/dcr/ticket.go:161],
@@ -234,35 +250,40 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
 - **Delete, reset and switch.** Deleting the trading wallet and switching it each reset the DEX
   data, so core is next initialized from the new trading wallet's seed. Deleting, resetting and
   switching are refused while a match is active, a bond is unrefunded (one broadcast and not yet
-  stored by the server included) or a BTC or LTC balance is at or above that chain's dust limit.
-  The refusal names each blocker and its way out: an active match, wait for it to finish; bonds,
-  turn renewal off, and the last one can refund once its lock time passes on its chain, the date
-  the refusal shows. On mainnet that is up to about 60
-  days after the bond was posted: a new bond locks for twice the server's bond expiry (30 days,
-  DEX [`dex/asset.go:22`][dex:dex/asset.go:22]) plus buffers
-  ([`client/core/bond.go:159-160`][dex:client/core/bond.go:159-160]). Core refunds it at its
-  first check after that, while Skarb runs logged in and has reached the server since it
-  started. If it has not, the refusal names a second way out: disable the account, which core
-  allows with unspent bonds when no order is active
-  ([`client/core/account.go:69-78`][dex:client/core/account.go:69-78]); core then refunds its
-  bonds after their lock times without the server
-  ([`client/core/bond.go:724-743`][dex:client/core/bond.go:724-743]). A BTC or LTC
-  balance: send it out. Otherwise they go ahead after a warning that names what a seed restore
-  does not bring back, including a BTC or LTC remainder below the dust limit, which only the old
-  trading wallet's seed recovers.
+  stored by the server included) or a BTC or LTC balance (available, immature and locked together)
+  is above zero and core's estimate for one send of all of it, with the fee taken from it
+  (`EstimateSendTxFee`, DEX [`client/core/core.go:5559`][dex:client/core/core.go:5559]), returns
+  anything other than its dust error
+  ([`client/asset/btc/spv_wrapper.go:744-745`][dex:client/asset/btc/spv_wrapper.go:744-745]). The
+  dust limit there follows the current fee rate, so the same balance can block at a low rate and
+  only warn at a high one. The refusal names each blocker and its way out: an active match, wait for
+  it to finish; bonds, turn renewal off, and the last one can refund once its lock time passes on
+  its chain, the date the refusal shows. On mainnet that is up to about 60 days after the bond was
+  posted: a new bond locks for twice the server's bond expiry (30 days, DEX
+  [`dex/asset.go:22`][dex:dex/asset.go:22]) plus buffers
+  ([`client/core/bond.go:159-160`][dex:client/core/bond.go:159-160]). Core refunds it at its first
+  check after that, while Skarb runs logged in and has reached the server since it started. If it
+  has not, the refusal names a second way out: disable the account, which core allows with unspent
+  bonds when no order is active
+  ([`client/core/account.go:69-78`][dex:client/core/account.go:69-78]); core then refunds its bonds
+  after their lock times without the server
+  ([`client/core/bond.go:724-743`][dex:client/core/bond.go:724-743]). A BTC or LTC balance: send it
+  out. Otherwise they go ahead after a warning that names what a seed restore does not bring back,
+  including a BTC or LTC remainder too small to send, which only the old trading wallet's seed
+  recovers.
 - **Bond renewal.** Skarb has a control that turns bond renewal off, setting the target tier to
   0 ([`client/core/bond.go:1137`][dex:client/core/bond.go:1137]); core then posts no new bond,
   and the ones posted refund after their lock times, on the same conditions.
-- **Wallet unlock after login.** At each app start with trading on, once `Login` has returned
-  (at turn-on, creating the wallets in core already unlocks them), Skarb unlocks the VAR, BTC
-  and LTC trading wallets in core (`OpenWallet`, DEX
-  [`client/core/core.go:3414`][dex:client/core/core.go:3414]). `Login` unlocks only the current
-  bond asset's wallet, and only on an enabled account with a target tier set
-  ([`client/core/core.go:5234-5252`][dex:client/core/core.go:5234-5252]), and a refund needs
-  that wallet unlocked ([`client/core/bond.go:523-527`][dex:client/core/bond.go:523-527]).
-  Without this, a bond in another asset, on a disabled account, or with the target tier at 0
-  (renewal off) is not refunded after a restart. If an unlock fails, Skarb treats it as a failed
-  `Login`: it shows the error and opens no wallet page.
+- **Wallet unlock after login.** At each app start with trading on, once `Login` has returned (at
+  turn-on, creating the wallets in core already unlocks them), Skarb unlocks each of the VAR, BTC
+  and LTC trading wallets core holds (`OpenWallet`, DEX
+  [`client/core/core.go:3414`][dex:client/core/core.go:3414]). `Login` unlocks only the current bond
+  asset's wallet, and only on an enabled account with a target tier set
+  ([`client/core/core.go:5234-5252`][dex:client/core/core.go:5234-5252]), and a refund needs that
+  wallet unlocked ([`client/core/bond.go:523-527`][dex:client/core/bond.go:523-527]). Without this,
+  a bond in another asset, on a disabled account, or with the target tier at 0 (renewal off) is not
+  refunded after a restart. If an unlock fails, Skarb treats it as a failed `Login`: it shows the
+  error and opens no wallet page.
 - **User-facing text:** trade from one install at a time; a lost DEX database loses swaps in flight,
   and after a restore from the seed a bond in its last ~30 days, or one sent and not yet stored by
   the server, is not found and its coins are lost; keep the computer on with Skarb running until
@@ -291,27 +312,30 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   the ticket buyer. A DEX `FundOrder` between a send's build and its publish selects none of the
   send's inputs. A send whose picked coin a `FundOrder` locked after the coin list was shown is
   refused.
-- **Item 14.** Delete, reset and switch, each tried with an active match, with an unrefunded
-  bond, with a bond broadcast and not yet confirmed, and with a BTC or LTC balance at the dust
-  limit: each is refused, naming that blocker and its way out (for a bond, its refund date: its
-  lock time). With bond renewal turned off, core posts no new bond; Skarb is restarted before
-  the last bond's lock time, the bond refunds after it with the target tier at 0, and the
-  refusal for it lifts. With a bond
-  unrefunded and Skarb started while the server is stopped, the refusal names disabling the
-  account; once it is
-  disabled, the bond refunds after its lock time passes on chain, the server still stopped. If
-  it does not, the outcome goes to the client before this step changes. With a balance
-  below the dust limit and nothing else: each warns, naming the remainder, then goes ahead. With
-  none of them: each warns, then goes ahead, and turning trading on with another wallet then
-  initializes core from that wallet's seed. Turning trading on while core is initialized is refused.
-  The cases with a bond (the refusal, renewal off, the disabled account's refund) each run
-  three times, with a VAR, a BTC and an LTC bond the test posts through core; with a BTC or LTC
-  bond the refusal names the bond among its blockers. Core refunds a BTC or LTC bond only once
-  the median time of its chain's recent blocks passes the lock time, so these tests mine
-  a block on that chain every 15 s until then, as in the measured run below.
-- **Trading account sends.** A send from the trading account in Skarb succeeds with the account
-  locked. After Skarb's lock following that send has run, a swap, a redeem and a refund from the
-  account each succeed.
+- **Item 14.** Delete, reset and switch, each tried with an active match, with an unrefunded bond,
+  with a bond broadcast and not yet confirmed, and with a BTC or LTC balance just large enough for
+  core's estimate of one send of all of it to return a fee: each is refused, naming that blocker and
+  its way out (for a bond, its refund date: its lock time). With bond renewal turned off, core posts
+  no new bond; Skarb is restarted before the last bond's lock time, the bond refunds after it with
+  the target tier at 0, and the refusal for it lifts. With a bond unrefunded and Skarb started while
+  the server is stopped, the refusal names disabling the account; once it is disabled, the bond
+  refunds after its lock time passes on chain, the server still stopped. If it does not, the outcome
+  goes to the client before this step changes. With a balance for which that estimate returns its
+  dust error, and nothing else: each warns, naming the remainder, then goes ahead. With none of
+  them: each warns, then goes ahead, and turning trading on with another wallet then initializes
+  core from that wallet's seed. Turning trading on while core is initialized is refused, offering
+  the reset as its way out. The cases with a bond (the refusal, renewal off, the disabled account's
+  refund) each run three times, with a VAR, a BTC and an LTC bond the test posts through core; with
+  a BTC or LTC bond the refusal names the bond among its blockers. Core refunds a BTC or LTC bond
+  only once the median time of its chain's recent blocks passes the lock time, so these tests mine a
+  block on that chain every 15 s until then, as in the measured run below.
+- **Trading account sends.** A send from the trading account within core's available VAR succeeds
+  with the account locked. After Skarb's lock following that send has run, a swap, a redeem and a
+  refund from the account each succeed. With a VAR bond and renewal on, a send of more than core's
+  available VAR from the trading account is refused; a send of all of it, the fee taken from the
+  amount, succeeds, and the next renewal posts its bond. With renewal on and the server stopped
+  since Skarb started, a send from the trading account is refused; once core's VAR balance reports a
+  bond reserve, the capped send succeeds.
 - **Item 15, passphrases.** Removing the startup passphrase with trading on is refused. After
   changing it, Skarb's next start logs in to the DEX with the new one. After changing the
   trading wallet's spending passphrase and locking the wallet: an order, a login and Skarb's
@@ -319,7 +343,11 @@ step's exported function. BTC and LTC use DCRDEX's native SPV wallets.
   given a wrong startup passphrase leaves the wallet as it was: the old spending and
   trading-account passphrases, and the stored mnemonic opening with the old one.
 
-**Done when** these tests pass.
+**Its core fix's test**, `TestBondReservesEachAsset`, in `client/core`'s mock rig: with VAR the bond
+asset and a BTC wallet that can bond but is no bond asset, every one of 50 bond passes sets VAR's
+reserve. It fails on the code before the fix.
+
+**Done when** these tests and the core fix's test pass.
 
 **Measured** on 2026-11-24, before this step is built: the native BTC and LTC wallets inside Skarb.
 Skarb `3e8790c`, this repository at `22e8b260`, `monetarium-wallet` `2c5d237e` in place of the
@@ -368,14 +396,19 @@ first core's.
 
 Item 15's guards.
 
-- **Quit warning.** Skarb's inherited quit check warns only for a signal, never for a closed
-  window, and is stubbed off today (SKARB [`ui/window.go:266-269`][skarb:ui/window.go:266-269]).
-  Gio, Skarb's UI toolkit, reports a closed window only after the window is gone, so the close
-  cannot be held. With an active match Skarb then keeps core running and opens a new window
-  with the warning (which swap, until when); it quits only once the user confirms. A signal
-  shows the same warning before anything stops. On macOS, Gio's app menu quits (Cmd+Q) with no
-  event to Skarb, so Skarb carries a Gio patch that asks it before the app terminates, vendored
-  as it already vendors Gio's `cpu` and `shader` modules.
+- **Quit warning.** Skarb's inherited quit check warns only for a signal, never for a closed window,
+  and is stubbed off today (SKARB [`ui/window.go:266-269`][skarb:ui/window.go:266-269]). Gio,
+  Skarb's UI toolkit, reports a closed window only after the window is gone, so the close cannot be
+  held. With an active match Skarb then keeps core running and opens a new window with the warning
+  (which swap, until its redeem deadline, and, while the user's own swap or redeem is still due,
+  that quitting can fail the match and draw a strike once the server's broadcast timeout passes, DEX
+  [`server/swap/swap.go:1128-1131`][dex:server/swap/swap.go:1128-1131],
+  [`:1156-1161`][dex:server/swap/swap.go:1156-1161],
+  [`:1230-1236`][dex:server/swap/swap.go:1230-1236]; the warning shows no time for it, since core
+  does not export that timeout); it quits only once the user confirms. A signal shows the same
+  warning before anything stops. On macOS, Gio's app menu quits (Cmd+Q) with no event to Skarb, so
+  Skarb carries a Gio patch that asks it before the app terminates, vendored as it already vendors
+  Gio's `cpu` and `shader` modules.
 - **Sync off.** Turning off the trading wallet's sync with an active match shows the same
   warning and waits for confirmation.
 - **Idle-sleep inhibitor.** While any match is active, Skarb holds the operating system's
@@ -389,8 +422,9 @@ Item 15's guards.
 
 **Tests**, in `skarb-wallet`:
 
-- **Quit and sync off.** With an active match, a window close, Cmd+Q on macOS, a signal and sync
-  off each show the swap and its deadline and wait for confirmation; core keeps running until
+- **Quit and sync off.** With an active match, a window close, Cmd+Q on macOS, a signal and sync off
+  each show the swap and its redeem deadline and wait for confirmation, and while the user's swap or
+  redeem is still due, that quitting can fail the match and draw a strike; core keeps running until
   then. With no active match, each goes ahead at once.
 - **Inhibitor.** With an active match the computer stays awake past its idle-sleep timeout,
   and the inhibitor shows in the system's list (`pmset -g
@@ -498,8 +532,8 @@ pass in each run.
   builds on step 1's release candidate; step 2's release needs the tag.
 - **Steps 3 and 4** live in this repository and need neither, so they can run alongside steps
   1 and 2.
-- **Step 5** needs steps 2, 3 and 4. **Steps 6 and 7** need step 5, and step 7 also needs its
-  core fix, which lives in this repository and can run alongside steps 1-4.
+- **Step 5** needs steps 2, 3 and 4. **Steps 6 and 7** need step 5. Steps 5 and 7 also need their
+  core fixes, which live in this repository and can run alongside steps 1-4.
 - **Handled outside this plan:** who cuts step 1's wallet tag and arranging the Skarb
   developer's testnet run, with the wallet release work; the Skarb maintainer's review of steps
   2, 5, 6 and 7 and the Skarb releases, agreed with the client at the first Skarb PR.
@@ -549,3 +583,13 @@ pass in each run.
 [dex:client/core/bond.go:523-527]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L523-L527
 [dex:client/core/core.go:6747-6751]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L6747-L6751
 [dex:client/core/core.go:4301-4306]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L4301-L4306
+[dex:client/core/core.go:7173]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L7173
+[dex:client/asset/mon/mon.go:1245-1261]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/asset/mon/mon.go#L1245-L1261
+[dex:client/core/bond.go:695]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L695
+[dex:client/core/core.go:5559]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/core.go#L5559
+[dex:server/swap/swap.go:1128-1131]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/server/swap/swap.go#L1128-L1131
+[dex:client/core/bond.go:193-197]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L193-L197
+[dex:client/asset/btc/spv_wrapper.go:744-745]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/asset/btc/spv_wrapper.go#L744-L745
+[dex:client/core/bond.go:226-229]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/client/core/bond.go#L226-L229
+[dex:server/swap/swap.go:1156-1161]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/server/swap/swap.go#L1156-L1161
+[dex:server/swap/swap.go:1230-1236]: https://github.com/monetarium/monetarium-dex/blob/59769704d308499eec5ea4840916a5067f923256/server/swap/swap.go#L1230-L1236

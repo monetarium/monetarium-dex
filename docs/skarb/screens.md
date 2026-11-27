@@ -30,9 +30,10 @@ rounded down to the market's rate step. CP converts through `float64`
 Skarb's sidebar has Overview, then the wallet list; a selected wallet expands into its tabs (SKARB
 [`ui/page/root/home_page.go:534-614`][skarb:ui/page/root/home_page.go:534-614],
 [`ui/page/wallet/single_wallet_main_page.go:85-108`][skarb:ui/page/wallet/single_wallet_main_page.go:85-108]).
-With trading on, the sidebar gets a "Trading" group between Overview and the wallet list: Markets
-(the market stats, the order book and the order form, steps 4-6), Orders (step 7), BTC, LTC (step 3)
-and Bond (step 2). With trading off the group is absent.
+Once trading is on and its turn-on progress is done (step 1), the sidebar gets a "Trading" group
+between Overview and the wallet list: Markets (the market stats, the order book and the order form,
+steps 4-6), Orders (step 7), BTC, LTC (step 3) and Bond (step 2). Before that, and with trading off,
+the group is absent.
 
 ## Step 1. Turning trading on, the Trading group and the badge
 
@@ -41,12 +42,14 @@ and Bond (step 2). With trading off the group is absent.
   a restore, a bond in its last ~30 days or one not yet stored by the server, keeping the computer
   on, the first BTC and LTC sync) before the user confirms, and plan.md step 5's refusals in place
   of the confirm button: a wallet with no stored mnemonic, a watch-only one or one restored from a
-  hex seed; core already initialized. With no startup passphrase set, the dialog says one is
-  required and opens app settings' startup passphrase, as plan.md step 5 requires.
+  hex seed; core already initialized, which offers "Reset trading data" in the refusal itself; that
+  reset logs in first, then runs the checks below. With no startup passphrase set, the dialog says
+  one is required and opens app settings' startup passphrase, as plan.md step 5 requires.
 - **Progress.** After the confirm, until `Login` has returned, the three wallets are created and
   synced and discovery has returned (plan.md step 7), the body shows the stage: logging in, each
   wallet's sync progress, then restoring the trading account (plan.md step 7's restoring state). The
-  Trading group appears once it is done.
+  Trading group appears once it is done. Trading counts as on once `InitializeClient` has returned,
+  and a turn-on cut short after that resumes at the next start from the stage reached.
 - **Badge.** A "Trading" badge next to the trading wallet's name in its sidebar entry (the caption
   row, SKARB [`ui/page/root/home_page.go:659`][skarb:ui/page/root/home_page.go:659]) and in its Info
   tab's header. One wallet at most carries it.
@@ -58,17 +61,26 @@ and Bond (step 2). With trading off the group is absent.
   screen that holds it: an active match, wait for it to finish (Orders); a bond, turn renewal off
   and its refund date and, when Skarb has not reached the server since it started, disable the
   account (Bond); a BTC or LTC balance, send it out (that coin's page). Without a blocker, each
-  shows plan.md step 5's warning, then goes ahead on confirm.
+  shows plan.md step 5's warning, then goes ahead on confirm. A confirmed reset turns trading off:
+  the Trading group and the badge go. A confirmed switch first checks the new wallet's seed refusals
+  (no stored mnemonic, watch-only, hex seed), then resets and opens the new wallet's turn-on dialog.
 
 **Tests:**
 
 - **`TestBlockerLines`.** Given an active match, a bond with a lock time, a bond broadcast and not
-  yet confirmed, and a BTC balance at the dust limit, the refusal has one line for each, naming its
-  way out, its screen and, for a bond, its refund date. With none, the warning shows instead.
+  yet confirmed, and a BTC balance for which core's estimate of one send of all of it returns a fee,
+  the refusal has one line for each, naming its way out, its screen and, for a bond, its refund
+  date. With none, or with only a BTC balance for which that estimate returns its dust error, the
+  warning shows instead, naming that remainder.
+- **`TestTurnOnStage`.** With `InitializeClient` not yet returned, trading is off; with it returned,
+  then logged in, wallets created, wallets synced, and discovery returned, the next start resumes at
+  logging in, wallet creation, sync, discovery, and the Trading group respectively.
 - `TestTradingStringsLocalized`.
 
 **Check**, by hand on the harnesses: turning trading on with a fresh wallet shows the progress
-stages, then the Trading group; the badge is on that wallet only.
+stages, then the Trading group; the badge is on that wallet only. Quitting during the BTC sync and
+starting again resumes at the sync. A reset removes the Trading group and the badge; a switch then
+shows the new wallet's turn-on dialog.
 
 ## Step 2. Bond
 
@@ -96,8 +108,11 @@ stages, then the Trading group; the badge is on that wallet only.
 - **Renewal.** plan.md step 5's control: on is target tier 1, off is 0. Its text for off: no new
   bond is posted, and posted bonds refund after their lock times while Skarb runs logged in and has
   reached the server since it started.
-- **Disable account**, plan.md step 5's second way out, sits here and asks for the startup
-  passphrase (`ToggleAccountStatus`, [`client/core/account.go:51`][dex:client/core/account.go:51]).
+- **Disable and enable account.** "Disable account", plan.md step 5's second way out, sits here and
+  asks for the startup passphrase (`ToggleAccountStatus`,
+  [`client/core/account.go:51`][dex:client/core/account.go:51]). Once disabled, "Enable account"
+  takes its place and also asks for the startup passphrase (`ToggleAccountStatus` with disable
+  false).
 - **Suspended.** The server takes the account's penalties off its bonded tier
   ([`server/account/account.go:187-189`][dex:server/account/account.go:187-189]) and refuses its
   orders below tier 1 ([`server/market/orderrouter.go:234`][dex:server/market/orderrouter.go:234],
@@ -164,6 +179,7 @@ stages, then the Trading group; the badge is on that wallet only.
   matches (two penalties), which the cap above stops without its raise.
 
 **Check**, by hand on the harnesses: a first bond in each coin, its confirmations, then renewal off.
+Disabling the account and enabling it again brings the order form back.
 
 ## Step 3. The BTC and LTC wallet pages
 
@@ -260,11 +276,11 @@ step 1's refusal names a screen that is not there.
   [`ui/page/dcrdex/market.go:1983-2000`][cp:ui/page/dcrdex/market.go:1983-2000]), which books an
   order that may not fill.
 - **Limit text:** a limit order stays in the book only while Skarb runs and is online; once Skarb
-  has been offline for the server's broadcast timeout, the server removes it
-  (DEX [`server/auth/auth.go:389-392`][dex:server/auth/auth.go:389-392],
-  [`server/dex/dex.go:943`][dex:server/dex/dex.go:943]). The text gives the timeout the server
-  reports in its config ([`dex/msgjson/types.go:1266`][dex:dex/msgjson/types.go:1266]; DCRDEX's
-  default is 12 minutes, [`server/cmd/dcrdex/config.go:56`][dex:server/cmd/dcrdex/config.go:56]).
+  has been offline for the server's broadcast timeout, the server removes it (DEX
+  [`server/auth/auth.go:389-392`][dex:server/auth/auth.go:389-392],
+  [`server/dex/dex.go:943`][dex:server/dex/dex.go:943]). The text names no figure, since core does
+  not export the server's timeout (DCRDEX's default is 12 minutes,
+  [`server/cmd/dcrdex/config.go:56`][dex:server/cmd/dcrdex/config.go:56]).
 - **Market buy.** Core and the server read a market buy's quantity in the quote coin
   ([`client/core/core.go:6243-6264`][dex:client/core/core.go:6243-6264],
   [`server/market/orderrouter.go:583-589`][dex:server/market/orderrouter.go:583-589]); CP sent the
@@ -297,9 +313,9 @@ step 1's refusal names a screen that is not there.
   any, shows in the dialog.
 - **In place of the form**, as CP had overlays
   ([`ui/page/dcrdex/market.go:809-848`][cp:ui/page/dcrdex/market.go:809-848]): the server is not
-  reached; no bond yet, with a link to Bond; a bond waiting for confirmations, with the count;
-  suspended (step 2); the BTC or LTC wallet still syncing. CP's login and add-wallet overlays are
-  not needed: plan.md step 5 logs in at start and creates the wallets at turn-on.
+  reached; no bond posted yet, with a link to Bond; a bond waiting for confirmations, with the
+  count; suspended (step 2); the market's BTC or LTC wallet still syncing. CP's login and add-wallet
+  overlays are not needed: plan.md step 5 logs in at start and creates the wallets at turn-on.
 
 **Tests:**
 
@@ -360,27 +376,28 @@ shows.
 
 | plan.md | Text | Screen |
 | --- | --- | --- |
-| Step 5 | Turn-on refused: no stored mnemonic, watch-only, hex seed; core already initialized | Turn-on dialog (step 1) |
+| Step 5 | Turn-on refused: no stored mnemonic, watch-only, hex seed; core already initialized, with "Reset trading data" as its way out | Turn-on dialog (step 1) |
 | Step 5 | A startup passphrase is required | Turn-on dialog, then app settings' startup passphrase (SKARB [`ui/page/settings/app_settings_page.go:419`][skarb:ui/page/settings/app_settings_page.go:419]) |
 | Step 5 | One install at a time, a lost DEX database, after a restore, a bond in its last ~30 days or one not yet stored by the server, keep the computer on, the first BTC and LTC sync | Turn-on dialog, before the confirm |
 | Step 5 | The login stage; a failed login or wallet unlock, with its error | Start screen, in place of the wallet pages ([`ui/page/start_page.go:254-259`][skarb:ui/page/start_page.go:254-259]) |
 | Step 5 | Removing the startup passphrase is refused while trading is on | App settings' startup passphrase switch |
 | Step 5 | A spending passphrase change asks for the startup passphrase; on failure the wallet is as before | The wallet's change spending passphrase dialog ([`ui/page/wallet/wallet_settings_page.go:440`][skarb:ui/page/wallet/wallet_settings_page.go:440]) |
 | Step 5 | A send refused because an order locked a picked coin | Send confirm dialog ([`ui/page/send/send_confirm_modal.go:100`][skarb:ui/page/send/send_confirm_modal.go:100]) |
+| Step 5 | A send from the trading account whose amount and fee together exceed core's available VAR is refused, naming the available amount; with renewal on and no bond reserve reported yet, any send from it is refused, naming that | Send confirm dialog |
 | Step 5 | A ticket purchase from the trading account is refused | Manual purchase dialog ([`ui/page/staking/manual_purchase_modal.go:69`][skarb:ui/page/staking/manual_purchase_modal.go:69]); the ticket buyer's account choice ([`ui/page/staking/stake_modal.go:197`][skarb:ui/page/staking/stake_modal.go:197]) |
 | Step 5 | Delete, reset and switch: the refusal with each blocker's way out; the warning | Remove wallet dialog; the Trading section's reset and switch (step 1) |
 | Step 5 | Bond renewal off and what follows | Bond (step 2) |
 | Step 5 | Disable the account, when Skarb has not reached the server | Bond (step 2), named by the refusal |
-| Step 6 | Quit with an active match: which swap, until when | plan.md step 6's own warning window; the same redeem deadline step 7 shows |
+| Step 6 | Quit with an active match: which swap, until when | plan.md step 6's own warning window, with the redeem deadline step 7 shows; while the user's swap or redeem is due, also that quitting can fail the match and draw a strike |
 | Step 6 | Sync off with an active match | The wallet's sync toggle ([`ui/page/root/home_page.go:255`][skarb:ui/page/root/home_page.go:255]), same warning |
 | Step 6 | Skarb cannot keep the computer awake | A banner on every screen of the Trading group |
 | Step 7 | Restoring the trading account | Turn-on progress (step 1) |
 
 Passphrase prompts: the spending and startup passphrases at turn-on (step 1), the startup passphrase
 at start (plan.md step 5); the startup passphrase for an order (step 6), a BTC or LTC send (step 3),
-a first bond and disabling the account (step 2), and a spending passphrase change (plan.md step 5);
-the spending passphrase for Skarb's own sends from the trading account, as today. Turning renewal on
-or off and the extra bond take none.
+a first bond, disabling and enabling the account (step 2), and a spending passphrase change (plan.md
+step 5); the spending passphrase for Skarb's own sends from the trading account, as today. Turning
+renewal on or off and the extra bond take none.
 
 ## Placed, or dropped with a reason
 
@@ -465,7 +482,6 @@ account.
 [dex:client/webserver/site/src/js/wallets.ts:1581]: https://github.com/monetarium/monetarium-dex/blob/c5ba192eea790672e1a3037daa03159f4fac5b4e/client/webserver/site/src/js/wallets.ts#L1581
 [dex:dex/asset.go:65-80]: https://github.com/monetarium/monetarium-dex/blob/c5ba192eea790672e1a3037daa03159f4fac5b4e/dex/asset.go#L65-L80
 [dex:dex/candles/candles.go:177]: https://github.com/monetarium/monetarium-dex/blob/c5ba192eea790672e1a3037daa03159f4fac5b4e/dex/candles/candles.go#L177
-[dex:dex/msgjson/types.go:1266]: https://github.com/monetarium/monetarium-dex/blob/c5ba192eea790672e1a3037daa03159f4fac5b4e/dex/msgjson/types.go#L1266
 [dex:dex/msgjson/types.go:1288-1298]: https://github.com/monetarium/monetarium-dex/blob/c5ba192eea790672e1a3037daa03159f4fac5b4e/dex/msgjson/types.go#L1288-L1298
 [dex:dex/order/match.go:76-97]: https://github.com/monetarium/monetarium-dex/blob/c5ba192eea790672e1a3037daa03159f4fac5b4e/dex/order/match.go#L76-L97
 [dex:dex/testing/dcrdex/genmarkets-var.sh:31]: https://github.com/monetarium/monetarium-dex/blob/c5ba192eea790672e1a3037daa03159f4fac5b4e/dex/testing/dcrdex/genmarkets-var.sh#L31
