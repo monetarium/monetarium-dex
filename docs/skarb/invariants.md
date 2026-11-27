@@ -171,9 +171,10 @@ Moved here from the PoC file; the number is kept.
     [`dex/asset.go:22`][dex:dex/asset.go:22],
     [`client/core/core.go:6705-6733`][dex:client/core/core.go:6705-6733]). So after a seed
     restore, a bond in its last ~30 days is not found, and its coins are lost. With bond renewal
-    on there is usually one such bond. Two conditions hold this up, both closed by the plan: on
-    a fresh profile core keeps a reported bond only with the plan's core fix, since `findBond`
-    saves it before the restored account is in the DB and drops it on the error (DEX
+    on there is usually one such bond. Two conditions hold this up, both closed by the plan (a
+    third, a suspended account, is accepted below): on a fresh profile core keeps a reported bond
+    only with the plan's core fix, since `findBond` saves it before the restored account is in the
+    DB and drops it on the error (DEX
     [`client/core/core.go:6747-6751`][dex:client/core/core.go:6747-6751],
     [`:4301-4306`][dex:client/core/core.go:4301-4306]); and core refunds a bond only while its
     wallet is unlocked, which `Login` does only for the current bond asset's wallet on an
@@ -196,7 +197,9 @@ Moved here from the PoC file; the number is kept.
   after a warning. Also accepted: if the server goes away while an order is booked, the account
   cannot be disabled and the order cannot be canceled, so the bond stays locked until the server
   returns. Also accepted: a bond broadcast but not yet stored by the server is lost on a restore
-  from the seed.
+  from the seed. Also accepted: after a seed restore into a fresh profile, core does not refund the
+  bond of an account the server has suspended, since discovery skips that account's key and its
+  bonds with it.
 - **Exposed by:**
   - a fixed test vector: a given trading-wallet seed gives a given DEX app seed in every
     version;

@@ -423,21 +423,22 @@ core's default lock time was posted, about 61 days before the lock time on mainn
 [`client/core/core.go:6710-6713`][dex:client/core/core.go:6710-6713]). Until discovery returns,
 Skarb shows a restoring state, not a frozen window.
 
-On a fresh profile, core's discovery keeps none of the on-chain bonds the server reports:
-`findBond` saves each to the DB before the restored account is there, fails and drops it (DEX
-[`client/core/core.go:6747-6751`][dex:client/core/core.go:6747-6751]), and `discoverAccount`
-then saves the account with no bonds ([`:4301-4306`][dex:client/core/core.go:4301-4306]). The
-bond comes back only on a later connect, while the server still reports it. A fix in this
-repository's `client/core` keeps such a bond in the account, so `discoverAccount` saves it, and
-Skarb pins a commit with the fix. **Its test**, in `client/core` against the VAR, BTC, LTC and
-`dcrdex` harnesses: a second core, restored from the first one's seed into a fresh DB, runs
-`DiscoverAccount` once, and core's DB then holds the server's bond under the restored account,
-with the key index the first core posted it under, with no reconnect. It fails on the code
-before the fix. The same test checks that a bond found under a key index that discovery then
-skips is not kept. Discovery leaves the restored account's target tier at 0, so Skarb then sets
-the target tier to what a first turn-on sets (`UpdateBondOptions`, DEX
-[`client/core/bond.go:1137`][dex:client/core/bond.go:1137]): renewal is on unless the user turns
-it off.
+On a fresh profile, core's discovery keeps none of the on-chain bonds the server reports: `findBond`
+saves each to the DB before the restored account is there, fails and drops it (DEX
+[`client/core/core.go:6747-6751`][dex:client/core/core.go:6747-6751]), and `discoverAccount` then
+saves the account with no bonds ([`:4301-4306`][dex:client/core/core.go:4301-4306]). The bond comes
+back only on a later connect, while the server still reports it. A fix in this repository's
+`client/core` keeps such a bond in the account, so `discoverAccount` saves it, and Skarb pins a
+commit with the fix. **Its test**, `TestDiscoveryKeepsBond`, in `client/core` against the VAR, BTC,
+LTC and `dcrdex` harnesses: a second core, restored from the first one's seed into a fresh DB, runs
+`DiscoverAccount` once, and core's DB then holds the server's bond under the restored account, with
+the key index the first core posted it under, with no reconnect. It fails on the code before the
+fix. A unit test, `TestDiscoverySkippedKeyBond`, in core's mock rig, checks that a bond found under
+an account key index that discovery then skips (a suspended account's) is not kept: on the harnesses
+an account is suspended only once its penalties reach its bonded tier. Discovery leaves the restored
+account's target tier at 0, so Skarb then sets the target tier to what a first turn-on sets
+(`UpdateBondOptions`, DEX [`client/core/bond.go:1137`][dex:client/core/bond.go:1137]): renewal is on
+unless the user turns it off.
 
 **Tests:**
 
@@ -454,11 +455,12 @@ it off.
   bond (a record of item 14's accepted risk; it guards no code, so it is not seen failing
   first).
 
-The tests each run three times, a restore each, with a VAR, a BTC and an LTC bond, and so does the
-core fix's test. As in step 5, core refunds a BTC or LTC bond only once its chain's median time
-passes the lock time, so the tests mine a block on that chain every 15 s until then.
+The tests each run three times, a restore each, with a VAR, a BTC and an LTC bond, and so does
+`TestDiscoveryKeepsBond`. As in step 5, core refunds a BTC or LTC bond only once its chain's median
+time passes the lock time, so the tests mine a block on that chain every 15 s until then.
 
-**Done when** the core fix's test and these tests pass in each run.
+**Done when** `TestDiscoverySkippedKeyBond` passes, and `TestDiscoveryKeepsBond` and these tests
+pass in each run.
 
 ## Placed, or dropped with a reason
 
