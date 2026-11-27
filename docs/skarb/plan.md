@@ -238,11 +238,12 @@ through that step's exported function. BTC and LTC use DCRDEX's native SPV walle
   with only a log line ([`client/core/bond.go:695`][dex:client/core/bond.go:695]), and the account
   at tier 0 once its bond expires. Core sets that reserve only once it holds the server's bond
   config ([`client/core/bond.go:193-197`][dex:client/core/bond.go:193-197]), and on its next bond
-  pass (every 20 s), so with renewal on and VAR the bond asset, until core's VAR balance reports a
-  bond reserve (`BondReserves`), a send from the trading account is refused, naming that. Core's
-  reserve pass also stops, where it means to skip, at the first wallet that can bond but is no bond
-  asset ([`:226-229`][dex:client/core/bond.go:226-229]), so VAR's reserve can go unset; the fix here
-  makes it skip that wallet.
+  pass (every 20 s), so with renewal on and VAR the account's configured bond asset
+  (`Exchange.Auth.BondAssetID`), until core's VAR balance reports a bond reserve (`BondReserves`), a
+  send from the trading account is refused, naming that. Core's reserve pass also stops, where it
+  means to skip, at the first wallet that can bond but is no bond asset
+  ([`:226-229`][dex:client/core/bond.go:226-229]), so VAR's reserve can go unset; the fix here makes
+  it skip that wallet.
 - **No tickets from the trading account.** Skarb's ticket purchase and its ticket buyer refuse
   the trading account (SKARB
   [`libwallet/assets/dcr/ticket.go:161`][skarb:libwallet/assets/dcr/ticket.go:161],
@@ -331,11 +332,11 @@ through that step's exported function. BTC and LTC use DCRDEX's native SPV walle
   block on that chain every 15 s until then, as in the measured run below.
 - **Trading account sends.** A send from the trading account within core's available VAR succeeds
   with the account locked. After Skarb's lock following that send has run, a swap, a redeem and a
-  refund from the account each succeed. With a VAR bond and renewal on, a send of more than core's
-  available VAR from the trading account is refused; a send of all of it, the fee taken from the
-  amount, succeeds, and the next renewal posts its bond. With renewal on and the server stopped
-  since Skarb started, a send from the trading account is refused; once core's VAR balance reports a
-  bond reserve, the capped send succeeds.
+  refund from the account each succeed. With VAR the configured bond asset and renewal on, a send of
+  more than core's available VAR from the trading account is refused; a send of all of it, the fee
+  taken from the amount, succeeds, and the next renewal posts its bond. With VAR the configured bond
+  asset, renewal on and the server stopped since Skarb started, a send from the trading account is
+  refused; once core's VAR balance reports a bond reserve, the capped send succeeds.
 - **Item 15, passphrases.** Removing the startup passphrase with trading on is refused. After
   changing it, Skarb's next start logs in to the DEX with the new one. After changing the
   trading wallet's spending passphrase and locking the wallet: an order, a login and Skarb's

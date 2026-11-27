@@ -383,7 +383,7 @@ shows.
 | Step 5 | Removing the startup passphrase is refused while trading is on | App settings' startup passphrase switch |
 | Step 5 | A spending passphrase change asks for the startup passphrase; on failure the wallet is as before | The wallet's change spending passphrase dialog ([`ui/page/wallet/wallet_settings_page.go:440`][skarb:ui/page/wallet/wallet_settings_page.go:440]) |
 | Step 5 | A send refused because an order locked a picked coin | Send confirm dialog ([`ui/page/send/send_confirm_modal.go:100`][skarb:ui/page/send/send_confirm_modal.go:100]) |
-| Step 5 | A send from the trading account whose amount and fee together exceed core's available VAR is refused, naming the available amount; with renewal on, VAR the bond asset and no bond reserve reported yet, any send from it is refused, naming that | Send confirm dialog |
+| Step 5 | A send from the trading account whose amount and fee together exceed core's available VAR is refused, naming the available amount; with renewal on, VAR the configured bond asset and no bond reserve reported yet, any send from it is refused, naming that | Send confirm dialog |
 | Step 5 | A ticket purchase from the trading account is refused | Manual purchase dialog ([`ui/page/staking/manual_purchase_modal.go:69`][skarb:ui/page/staking/manual_purchase_modal.go:69]); the ticket buyer's account choice ([`ui/page/staking/stake_modal.go:197`][skarb:ui/page/staking/stake_modal.go:197]) |
 | Step 5 | Delete, reset and switch: the refusal with each blocker's way out; the warning | Remove wallet dialog; the Trading section's reset and switch (step 1) |
 | Step 5 | Bond renewal off and what follows | Bond (step 2) |
