@@ -193,13 +193,13 @@ Moved here from the PoC file; the number is kept.
 - **Accepted risk:** losing the DEX database outside the app (a lost device, a wiped app directory)
   while a swap is in flight or a bond is in its last ~30 days. There is no database export. Skarb
   states this limit in its user-facing text, and a deletion, reset or switch with no active match,
-  no unrefunded bond and no BTC or LTC balance at or above that chain's dust limit goes ahead only
-  after a warning. Also accepted: if the server goes away while an order is booked, the account
-  cannot be disabled and the order cannot be canceled, so the bond stays locked until the server
-  returns. Also accepted: a bond broadcast but not yet stored by the server is lost on a restore
-  from the seed. Also accepted: after a seed restore into a fresh profile, core does not refund the
-  bond of an account the server has suspended, since discovery skips that account's key and its
-  bonds with it.
+  no unrefunded bond and no BTC or LTC balance that one send can move out, by plan.md step 5's rule,
+  goes ahead only after a warning. Also accepted: if the server goes away while an order is booked,
+  the account cannot be disabled and the order cannot be canceled, so the bond stays locked until
+  the server returns. Also accepted: a bond broadcast but not yet stored by the server is lost on a
+  restore from the seed. Also accepted: after a seed restore into a fresh profile, core does not
+  refund the bond of an account the server has suspended, since discovery skips that account's key
+  and its bonds with it.
 - **Exposed by:**
   - a fixed test vector: a given trading-wallet seed gives a given DEX app seed in every
     version;
@@ -207,8 +207,8 @@ Moved here from the PoC file; the number is kept.
     still reports and BTC and LTC balances: the bond is found at discovery and, after a restart
     before its lock time, refunded, and the balances show;
   - deletion, reset and switch attempts while a match is active, while a bond is unrefunded (one
-    broadcast and not yet stored by the server included), and while a BTC or LTC balance is at
-    or above that chain's dust limit: each is refused.
+    broadcast and not yet stored by the server included), and while a BTC or LTC balance can be sent
+    out by plan.md step 5's rule: each is refused.
 
 ### 15. Skarb stays up for each redeem before the counterparty's lock time
 
