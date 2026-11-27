@@ -226,7 +226,7 @@ func (c *Core) updateBondReserves(balanceCheckID ...uint32) {
 		if !found {
 			// Not selected as a bond asset for any exchanges.
 			bonder.SetBondReserves(0)
-			return
+			continue
 		}
 		var nominalReserves uint64
 		for _, v := range bondValues {
