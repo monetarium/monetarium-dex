@@ -7,7 +7,8 @@ at start, lock times of 8 and 20 hours) holds here unchanged. SKA trading and mo
 are later stages.
 
 Not covered here: Skarb's trading screens (markets, the order form, the BTC and LTC wallet pages,
-the choice of bond coin, a "Trading" badge on the trading wallet), which get a plan of their own.
+the choice of bond coin, a "Trading" badge on the trading wallet), which get a plan of their own:
+[`screens.md`](screens.md).
 The steps below build what items 11-15 need underneath them.
 
 Each step below ends when its named tests pass. As in the PoC plan
