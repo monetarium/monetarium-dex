@@ -238,11 +238,11 @@ through that step's exported function. BTC and LTC use DCRDEX's native SPV walle
   with only a log line ([`client/core/bond.go:695`][dex:client/core/bond.go:695]), and the account
   at tier 0 once its bond expires. Core sets that reserve only once it holds the server's bond
   config ([`client/core/bond.go:193-197`][dex:client/core/bond.go:193-197]), and on its next bond
-  pass (every 20 s), so with renewal on, until core's VAR balance reports a bond reserve
-  (`BondReserves`), a send from the trading account is refused, naming that. Core's reserve pass
-  also stops, where it means to skip, at the first wallet that can bond but is no bond asset
-  ([`:226-229`][dex:client/core/bond.go:226-229]), so VAR's reserve can go unset; the fix here makes
-  it skip that wallet.
+  pass (every 20 s), so with renewal on and VAR the bond asset, until core's VAR balance reports a
+  bond reserve (`BondReserves`), a send from the trading account is refused, naming that. Core's
+  reserve pass also stops, where it means to skip, at the first wallet that can bond but is no bond
+  asset ([`:226-229`][dex:client/core/bond.go:226-229]), so VAR's reserve can go unset; the fix here
+  makes it skip that wallet.
 - **No tickets from the trading account.** Skarb's ticket purchase and its ticket buyer refuse
   the trading account (SKARB
   [`libwallet/assets/dcr/ticket.go:161`][skarb:libwallet/assets/dcr/ticket.go:161],
