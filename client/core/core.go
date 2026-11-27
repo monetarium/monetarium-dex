@@ -4288,6 +4288,9 @@ func (c *Core) discoverAccount(dc *dexConnection, crypter encrypt.Crypter) (bool
 		// an existing revoked bond could be resurrected.
 		if rep.BondedTier <= int64(rep.Penalties) {
 			dc.acct.unAuth() // acct was marked as authenticated by authDEX above.
+			dc.acct.authMtx.Lock()
+			dc.acct.bonds = nil // drop the bonds found for this skipped key's account
+			dc.acct.authMtx.Unlock()
 			c.log.Infof("HD account key for %s has tier %d, but %d penalties (not able to trade). Deriving another account key.",
 				dc.acct.host, rep.BondedTier, rep.Penalties)
 			time.Sleep(200 * time.Millisecond) // don't hammer
@@ -6746,9 +6749,13 @@ func (c *Core) findBond(dc *dexConnection, bond *msgjson.Bond) (strength, bondAs
 
 	err = c.db.AddBond(dc.acct.host, dbBond)
 	if err != nil {
-		c.log.Errorf("Failed to store bond %s (%s) for dex %v: %w",
-			bondIDStr, unbip(bond.AssetID), dc.acct.host, err)
-		return 0, 0
+		// During discovery on a fresh profile the account is not in the DB
+		// yet: keep the bond, and discoverAccount saves it with the account.
+		if _, acctErr := c.db.Account(dc.acct.host); !errors.Is(acctErr, db.ErrAcctNotFound) {
+			c.log.Errorf("Failed to store bond %s (%s) for dex %v: %w",
+				bondIDStr, unbip(bond.AssetID), dc.acct.host, err)
+			return 0, 0
+		}
 	}
 
 	dc.acct.authMtx.Lock()
