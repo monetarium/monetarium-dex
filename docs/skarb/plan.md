@@ -344,7 +344,7 @@ through that step's exported function. BTC and LTC use DCRDEX's native SPV walle
   trading-account passphrases, and the stored mnemonic opening with the old one.
 
 **Its core fix's test**, `TestBondReservesEachAsset`, in `client/core`'s mock rig: with VAR the bond
-asset and a BTC wallet that can bond but is no bond asset, every one of 50 bond passes sets VAR's
+asset and a BTC wallet that can bond but is no bond asset, every one of 100 bond passes sets VAR's
 reserve. It fails on the code before the fix.
 
 **Done when** these tests and the core fix's test pass.
