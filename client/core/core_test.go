@@ -738,7 +738,7 @@ func newTWallet(assetID uint32) (*xcWallet, *TXCWallet) {
 		confs:            make(map[string]uint32),
 		confsErr:         make(map[string]error),
 		ownsAddress:      true,
-		contractLockTime: time.Now().Add(time.Minute),
+		contractLockTime: time.Now().Add(2 * time.Hour), // past the maker's redeem margin
 		lastSwaps:        make([]*asset.Swaps, 0),
 		lastRedeems:      make([]*asset.RedeemForm, 0),
 		info: &asset.WalletInfo{
@@ -5483,7 +5483,7 @@ func TestRefunds(t *testing.T) {
 	tEthWallet.contractLockTime = time.Now()
 	checkRefund(tracker, match, matchSizeQuoteUnits)
 	tEthWallet.contractExpired = false
-	tEthWallet.contractLockTime = time.Now().Add(time.Minute)
+	tEthWallet.contractLockTime = time.Now().Add(2 * time.Hour)
 
 	// TAKER REFUND, NO MAKER REDEEM
 	//
@@ -5574,7 +5574,7 @@ func TestRefunds(t *testing.T) {
 	tEthWallet.contractLockTime = time.Now()
 	checkRefund(tracker, match, matchSizeQuoteUnits)
 	tEthWallet.contractExpired = false
-	tEthWallet.contractLockTime = time.Now().Add(time.Minute)
+	tEthWallet.contractLockTime = time.Now().Add(2 * time.Hour)
 }
 
 func TestNotifications(t *testing.T) {
